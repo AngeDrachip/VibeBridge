@@ -1,0 +1,17 @@
+[package]
+name = "vibe-loader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Forge mod discovery and archive inspection for Vibe."
+
+[dependencies]
+vibe-core = { path = "../vibe-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+zip = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+walkdir = { workspace = true }

@@ -1,0 +1,23 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# Java
+/java/build/
+/java/**/build/
+*.class
+
+# Runtime / local state
+/vibe.toml
+/.vibe/
+*.log
+/horizon-mods/
+/dist/
+/test-output/
+
+# Editors
+.idea/
+.vscode/
+*.iml
+.DS_Store
+Thumbs.db

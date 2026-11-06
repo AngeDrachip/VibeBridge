@@ -1,0 +1,10 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "MIT"
+
+[[mods]]
+modId = "legacy_hello"
+version = "1.0.0"
+displayName = "Legacy Hello"
+description = "Vibe bridge integration fixture using legacy lifecycle handlers."
+authors = "Vibe Tests"

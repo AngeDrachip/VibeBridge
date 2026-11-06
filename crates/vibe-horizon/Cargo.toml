@@ -1,0 +1,19 @@
+[package]
+name = "vibe-horizon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Documented Horizon integration for Vibe: control probe and content-mod export."
+
+[dependencies]
+vibe-core = { path = "../vibe-core" }
+vibe-loader = { path = "../vibe-loader" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+zip = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

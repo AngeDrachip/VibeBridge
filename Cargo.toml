@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vibe-core",
+    "crates/vibe-loader",
+    "crates/vibe-bridge",
+    "crates/vibe-registry",
+    "crates/vibe-events",
+    "crates/vibe-horizon",
+    "crates/vibe-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/VibeBridge/VibeBridge"
+homepage = "https://github.com/VibeBridge/VibeBridge"
+description = "A compatibility layer for running Minecraft Forge mods on Horizon."
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+thiserror = "2"
+sha2 = "0.10"
+hex = "0.4"
+walkdir = "2"
+clap = { version = "4", features = ["derive"] }
+tempfile = "3"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

@@ -1,0 +1,10 @@
+modLoader = "javafml"
+loaderVersion = "[1,)"
+license = "MIT"
+
+[[mods]]
+modId = "hello_forge"
+version = "0.1.0"
+displayName = "Hello Forge"
+description = "Vibe bridge integration fixture using the modern constructor."
+authors = "Vibe Tests"
