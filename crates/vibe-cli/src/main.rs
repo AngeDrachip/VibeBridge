@@ -17,7 +17,9 @@ use vibe_bridge::{
 };
 use vibe_core::error::{Result, VibeError};
 use vibe_core::Verdict;
-use vibe_horizon::{export_jar, probe, ExportOptions};
+use vibe_horizon::{
+    export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
+};
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
 use vibe_registry::plan;
 
@@ -114,6 +116,10 @@ enum HorizonCommand {
     Probe(ProbeArgs),
     /// Export a jar's assets/data as a Horizon .hmod content bundle.
     Export(ExportArgs),
+    /// Check a .hmod against the Horizon rules Vibe can verify.
+    Validate(ValidateArgs),
+    /// Copy a validated .hmod into <game-dir>/horizon-mods/.
+    Install(InstallArgs),
 }
 
 #[derive(Args)]
@@ -156,6 +162,27 @@ struct ExportArgs {
     no_atlases: bool,
 }
 
+#[derive(Args)]
+struct ValidateArgs {
+    /// The .hmod content bundle to check. It is opened read-only.
+    bundle: PathBuf,
+}
+
+#[derive(Args)]
+struct InstallArgs {
+    /// The .hmod content bundle to install.
+    bundle: PathBuf,
+    /// Horizon game folder: the one holding options.txt.
+    #[arg(long)]
+    game_dir: PathBuf,
+    /// Replace an existing file with the same name.
+    #[arg(long)]
+    force: bool,
+    /// Check everything and report the destination without copying.
+    #[arg(long)]
+    dry_run: bool,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match execute(cli) {
@@ -177,6 +204,8 @@ fn execute(cli: Cli) -> Result<u8> {
         Command::Horizon(args) => match args.command {
             HorizonCommand::Probe(args) => horizon_probe(args, json),
             HorizonCommand::Export(args) => horizon_export(args, json),
+            HorizonCommand::Validate(args) => horizon_validate(args, json),
+            HorizonCommand::Install(args) => horizon_install(args, json),
         },
     }
 }
@@ -779,9 +808,82 @@ fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {
     Ok(0)
 }
 
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
+fn horizon_validate(args: ValidateArgs, json: bool) -> Result<u8> {
+    let report = validate_content_bundle(&args.bundle)?;
+    if json {
+        print_json(&report)?;
+    } else {
+        println!("Bundle: {}", report.path.display());
+        println!("  sha256: {}", report.sha256);
+        match (&report.id, &report.version) {
+            (Some(id), Some(version)) => println!("  id: {id}  version: {version}"),
+            _ => println!("  id/version: unavailable"),
+        }
+        if let Some(name) = &report.name {
+            println!("  name: {name}");
+        }
+        println!(
+            "  api: {}  side: {}",
+            report.api.as_deref().unwrap_or("unavailable"),
+            report.side.as_deref().unwrap_or("unavailable")
+        );
+        println!(
+            "  {} file(s), {} bytes; {} block(s), {} item(s)",
+            report.files, report.bytes, report.block_definitions, report.item_definitions
+        );
+        if !report.namespaces.is_empty() {
+            println!("  namespaces: {}", report.namespaces.join(", "));
+        }
+        if !report.errors.is_empty() {
+            println!("Errors:");
+            for error in &report.errors {
+                println!("  - {error}");
+            }
+        }
+        if !report.warnings.is_empty() {
+            println!("Warnings:");
+            for warning in &report.warnings {
+                println!("  - {warning}");
+            }
+        }
+        println!(
+            "Result: {}",
+            if report.valid {
+                "valid under the Horizon rules Vibe checks"
+            } else {
+                "invalid"
+            }
+        );
+        if report.valid {
+            println!(
+                "  Vibe checks the documented manifest, namespace, path, size and block/item rules; run `cargo horizon-mod check` for Horizon's own validation."
+            );
+        }
+    }
+    Ok(if report.valid { 0 } else { 2 })
+}
+
+fn horizon_install(args: InstallArgs, json: bool) -> Result<u8> {
+    let report = install_content_bundle(&args.bundle, &args.game_dir, args.force, args.dry_run)?;
+    if json {
+        print_json(&report)?;
+    } else if report.dry_run {
+        println!("Would install {}", report.bundle.display());
+        println!("  to: {}", report.destination.display());
+        println!("  {} bytes, sha256 {}", report.bytes, report.sha256);
+    } else {
+        println!("Installed {}", report.bundle.display());
+        println!("  to: {}", report.destination.display());
+        println!("  {} bytes, sha256 {}", report.bytes, report.sha256);
+    }
+    if !report.validation.warnings.is_empty() {
+        println!("Warnings:");
+        for warning in &report.validation.warnings {
+            println!("  - {warning}");
+        }
+    }
+    Ok(0)
+}
 
 fn resolve_runtime(explicit: Option<PathBuf>) -> Option<PathBuf> {
     explicit

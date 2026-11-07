@@ -33,7 +33,21 @@ pub const CONTENT_API: &str = "0.2";
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILES: usize = 65_536;
+const MAX_METADATA_BYTES: u64 = 8 * 1024 * 1024;
 const MANIFEST_NAME: &str = "horizon-mod.toml";
+/// Every key Horizon's content-mod manifest documents. Unknown keys are refused
+/// by Horizon, so validation reports them too.
+const MANIFEST_KEYS: &[&str] = &[
+    "id",
+    "name",
+    "version",
+    "description",
+    "authors",
+    "api",
+    "side",
+    "capabilities",
+    "namespaces",
+];
 
 // ---------------------------------------------------------------------------
 // horizon-ctl discovery and probing
@@ -252,6 +266,504 @@ pub struct ContentExport {
     pub manifest: String,
     pub warnings: Vec<String>,
     pub notes: Vec<String>,
+}
+
+/// The result of checking an existing `.hmod` bundle against the documented
+/// Horizon content-mod rules Vibe knows how to verify.
+///
+/// This is not a replacement for Horizon's own `cargo horizon-mod check`; it
+/// covers the manifest, namespace, path, size, and first-level block/item
+/// declaration rules documented by Horizon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BundleValidation {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub valid: bool,
+    pub id: Option<String>,
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub side: Option<String>,
+    pub api: Option<String>,
+    pub namespaces: Vec<String>,
+    pub files: usize,
+    pub bytes: u64,
+    pub block_definitions: usize,
+    pub item_definitions: usize,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+/// The result of installing a validated bundle into a Horizon game folder.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InstallReport {
+    pub bundle: PathBuf,
+    pub game_dir: PathBuf,
+    pub destination: PathBuf,
+    pub dry_run: bool,
+    pub bytes: u64,
+    pub sha256: String,
+    pub validation: BundleValidation,
+}
+
+/// Check an existing `.hmod` without changing it.
+pub fn validate_content_bundle(path: &Path) -> Result<BundleValidation> {
+    if !path.is_file() {
+        return Err(VibeError::MissingPath(path.to_path_buf()));
+    }
+    let sha256 = hash_file(path)?;
+    let file = File::open(path)?;
+    let mut archive = ZipArchive::new(file)
+        .map_err(|error| VibeError::Archive(format!("{}: {error}", path.display())))?;
+
+    let mut names = Vec::new();
+    let mut manifest_text = None;
+    let mut total_bytes = 0u64;
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut total_over = false;
+
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|error| VibeError::Archive(format!("{}: {error}", path.display())))?;
+        if entry.is_dir() {
+            continue;
+        }
+        let name = entry.name().replace('\\', "/");
+        let size = entry.size();
+        if !seen.insert(name.clone()) {
+            errors.push(format!("duplicate archive entry {name:?}"));
+        }
+        if size > MAX_FILE_BYTES {
+            errors.push(format!(
+                "{name} is {size} bytes; Horizon's limit is {MAX_FILE_BYTES} bytes per file"
+            ));
+        }
+        total_bytes = total_bytes.saturating_add(size);
+        if total_bytes > MAX_TOTAL_BYTES && !total_over {
+            errors.push(format!(
+                "the bundle exceeds Horizon's {MAX_TOTAL_BYTES}-byte total limit"
+            ));
+            total_over = true;
+        }
+        if name == MANIFEST_NAME {
+            if size > MAX_METADATA_BYTES {
+                errors.push(format!(
+                    "{MANIFEST_NAME} is larger than the {MAX_METADATA_BYTES}-byte inspection limit"
+                ));
+            } else {
+                let mut text = String::new();
+                entry.read_to_string(&mut text)?;
+                manifest_text = Some(text);
+            }
+        }
+        names.push(name);
+    }
+
+    if names.len() > MAX_FILES {
+        errors.push(format!(
+            "the bundle has {} files; Horizon's limit is {MAX_FILES}",
+            names.len()
+        ));
+    }
+
+    let mut id = None;
+    let mut name = None;
+    let mut version = None;
+    let mut side = None;
+    let mut api = None;
+    let mut advertised = BTreeSet::new();
+
+    match manifest_text {
+        None => errors.push(format!("bundle has no {MANIFEST_NAME}")),
+        Some(text) => {
+            let manifest = match text.parse::<toml::Value>() {
+                Ok(toml::Value::Table(table)) => Some(table),
+                Ok(_) => {
+                    errors.push(format!("{MANIFEST_NAME} must be a TOML table"));
+                    None
+                }
+                Err(error) => {
+                    errors.push(format!("{MANIFEST_NAME} does not parse: {error}"));
+                    None
+                }
+            };
+            if let Some(table) = manifest {
+                for key in table.keys() {
+                    if !MANIFEST_KEYS.contains(&key.as_str()) {
+                        errors.push(format!("unknown manifest key {key:?}"));
+                    }
+                }
+
+                id = manifest_string(&table, "id", &mut errors, true);
+                name = manifest_string(&table, "name", &mut errors, false);
+                version = manifest_string(&table, "version", &mut errors, true);
+                api = manifest_string(&table, "api", &mut errors, true);
+                side = manifest_string(&table, "side", &mut errors, false);
+
+                if let Some(value) = &id {
+                    if !valid_horizon_id(value) {
+                        errors.push(format!(
+                            "manifest id {value:?} is not Horizon's [a-z0-9_]{{1,64}} pattern"
+                        ));
+                    }
+                }
+                if let Some(value) = &version {
+                    if value.trim().is_empty() {
+                        errors.push("manifest version is empty".into());
+                    }
+                }
+                if let Some(value) = &api {
+                    if value != CONTENT_API {
+                        errors.push(format!(
+                            "manifest api {value:?} is not Horizon's content API {CONTENT_API}"
+                        ));
+                    }
+                }
+                if let Some(value) = &side {
+                    if !matches!(value.as_str(), "client" | "server" | "both") {
+                        errors.push(format!(
+                            "manifest side {value:?} is not client, server, or both"
+                        ));
+                    }
+                } else {
+                    warnings.push(
+                        "manifest has no side; Horizon treats a missing side as \"client\"".into(),
+                    );
+                }
+                if name.is_none() {
+                    warnings.push("manifest has no name".into());
+                }
+
+                match table.get("capabilities") {
+                    Some(toml::Value::Array(values)) => {
+                        let has_registries = values
+                            .iter()
+                            .filter_map(toml::Value::as_str)
+                            .any(|value| value == "registries");
+                        if !has_registries {
+                            errors.push(
+                                "manifest capabilities does not include \"registries\"".into(),
+                            );
+                        }
+                        for value in values {
+                            if let Some(value) = value.as_str() {
+                                if value != "registries" {
+                                    warnings.push(format!(
+                                        "manifest has unrecognised capability {value:?}"
+                                    ));
+                                }
+                            } else {
+                                errors.push(
+                                    "manifest capabilities must be an array of strings".into(),
+                                );
+                            }
+                        }
+                    }
+                    Some(_) => {
+                        errors.push("manifest capabilities must be an array of strings".into())
+                    }
+                    None => errors.push("manifest is missing capabilities".into()),
+                }
+
+                match table.get("authors") {
+                    Some(toml::Value::Array(values)) => {
+                        if values.iter().any(|value| !value.is_str()) {
+                            errors.push("manifest authors must be an array of strings".into());
+                        }
+                    }
+                    Some(toml::Value::String(_)) | None => {
+                        if table.get("authors").is_some() {
+                            errors.push("manifest authors must be an array of strings".into());
+                        }
+                    }
+                    Some(_) => errors.push("manifest authors must be an array of strings".into()),
+                }
+                match table.get("description") {
+                    Some(toml::Value::String(_)) | None => {}
+                    Some(_) => errors.push("manifest description must be a string".into()),
+                }
+
+                if let Some(extra) = table.get("namespaces") {
+                    match extra {
+                        toml::Value::Array(values) => {
+                            for value in values {
+                                let Some(namespace) = value.as_str() else {
+                                    errors.push(
+                                        "manifest namespaces must be an array of strings".into(),
+                                    );
+                                    continue;
+                                };
+                                if !valid_namespace(namespace) {
+                                    errors.push(format!(
+                                        "manifest namespace {namespace:?} is invalid"
+                                    ));
+                                } else if matches!(namespace, "minecraft" | "c" | "horizon") {
+                                    errors.push(format!(
+                                        "manifest namespace {namespace:?} is reserved"
+                                    ));
+                                } else if !advertised.insert(namespace.to_string()) {
+                                    warnings.push(format!(
+                                        "manifest namespace {namespace:?} is listed more than once"
+                                    ));
+                                }
+                            }
+                        }
+                        _ => errors.push("manifest namespaces must be an array of strings".into()),
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(value) = &id {
+        advertised.insert(value.clone());
+    }
+    let owned = advertised.clone();
+
+    let mut block_definitions = 0;
+    let mut item_definitions = 0;
+    for entry_name in &names {
+        if entry_name == MANIFEST_NAME {
+            continue;
+        }
+        if !valid_entry_path(entry_name) {
+            errors.push(format!(
+                "entry {entry_name:?} is not a safe, lowercase resource path"
+            ));
+            continue;
+        }
+        if entry_name.ends_with(".class") {
+            warnings.push(format!(
+                "{entry_name} is Java bytecode; Horizon content mods ignore it"
+            ));
+            continue;
+        }
+        let Some((prefix, rest)) = entry_name
+            .strip_prefix("assets/")
+            .map(|rest| ("assets", rest))
+            .or_else(|| entry_name.strip_prefix("data/").map(|rest| ("data", rest)))
+        else {
+            warnings.push(format!(
+                "{entry_name} is neither a manifest, an asset, nor a data file; Horizon ignores it"
+            ));
+            continue;
+        };
+        let namespace = rest.split('/').next().unwrap_or("");
+        if namespace.is_empty() {
+            errors.push(format!("{entry_name} has no namespace"));
+            continue;
+        }
+        if namespace == "horizon" {
+            errors.push(format!(
+                "{entry_name} uses the reserved namespace \"horizon\""
+            ));
+            continue;
+        }
+        if namespace == "minecraft" {
+            let allowed = entry_name.starts_with("data/minecraft/tags/")
+                || entry_name.starts_with("assets/minecraft/atlases/");
+            if !allowed {
+                errors.push(format!(
+                    "{entry_name} is under minecraft; a content mod may only add tags or atlas sources there"
+                ));
+            }
+        } else if namespace == "c" {
+            if !entry_name.starts_with("data/c/tags/") {
+                errors.push(format!(
+                    "{entry_name} is under c; a content mod may only add convention tags there"
+                ));
+            }
+        } else if !owned.contains(namespace) {
+            errors.push(format!(
+                "{entry_name} uses namespace {namespace:?}, which the manifest does not own"
+            ));
+        }
+
+        if let Some(id) = id.as_deref() {
+            let block_prefix = format!("data/{id}/horizon/block/");
+            let item_prefix = format!("data/{id}/horizon/item/");
+            let kind = if entry_name.starts_with(&block_prefix) && entry_name.ends_with(".json") {
+                Some(("block", &mut block_definitions))
+            } else if entry_name.starts_with(&item_prefix) && entry_name.ends_with(".json") {
+                Some(("item", &mut item_definitions))
+            } else {
+                None
+            };
+            if let Some((kind, count)) = kind {
+                *count += 1;
+                match archive.by_name(entry_name) {
+                    Ok(mut entry) => {
+                        let mut text = String::new();
+                        if let Err(error) = entry.read_to_string(&mut text) {
+                            errors.push(format!("{entry_name} could not be read: {error}"));
+                        } else {
+                            match serde_json::from_str::<serde_json::Value>(&text) {
+                                Ok(serde_json::Value::Object(object)) => {
+                                    match object.get("template").and_then(|v| v.as_str()) {
+                                        Some(template) if template.starts_with("minecraft:") => {}
+                                        Some(template) => errors.push(format!(
+                                            "{entry_name} template {template:?} is not a minecraft: template"
+                                        )),
+                                        None => errors.push(format!(
+                                            "{entry_name} is a {kind} declaration without a string template"
+                                        )),
+                                    }
+                                }
+                                Ok(_) => errors.push(format!(
+                                    "{entry_name} must be a JSON object with a template"
+                                )),
+                                Err(error) => {
+                                    errors.push(format!("{entry_name} is not valid JSON: {error}"))
+                                }
+                            }
+                        }
+                    }
+                    Err(error) => errors.push(format!("{entry_name} could not be opened: {error}")),
+                }
+            }
+        }
+        let _ = prefix;
+    }
+
+    let valid = errors.is_empty();
+    Ok(BundleValidation {
+        path: path.to_path_buf(),
+        sha256,
+        valid,
+        id,
+        name,
+        version,
+        side,
+        api,
+        namespaces: advertised.into_iter().collect(),
+        files: names.len(),
+        bytes: total_bytes,
+        block_definitions,
+        item_definitions,
+        errors,
+        warnings,
+    })
+}
+
+/// Validate a bundle and copy it into `<game_dir>/horizon-mods/`.
+///
+/// `dry_run` performs every check and reports the destination without writing.
+pub fn install_content_bundle(
+    bundle: &Path,
+    game_dir: &Path,
+    force: bool,
+    dry_run: bool,
+) -> Result<InstallReport> {
+    if !game_dir.is_dir() {
+        return Err(VibeError::Horizon(format!(
+            "game directory {} does not exist or is not a directory",
+            game_dir.display()
+        )));
+    }
+    let validation = validate_content_bundle(bundle)?;
+    if !validation.valid {
+        let details = validation
+            .errors
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(VibeError::Horizon(format!(
+            "{} is not a valid Horizon content bundle: {details}",
+            bundle.display()
+        )));
+    }
+    let file_name = bundle
+        .file_name()
+        .ok_or_else(|| VibeError::Horizon("bundle path has no file name".into()))?;
+    let mods_dir = game_dir.join("horizon-mods");
+    let destination = mods_dir.join(file_name);
+    if same_path(bundle, &destination) {
+        return Err(VibeError::Horizon(
+            "refusing to install a bundle over itself".into(),
+        ));
+    }
+    if destination.exists() && !force {
+        return Err(VibeError::Horizon(format!(
+            "{} already exists; pass --force to replace it",
+            destination.display()
+        )));
+    }
+
+    let source_bytes = std::fs::metadata(bundle)?.len();
+    if !dry_run {
+        std::fs::create_dir_all(&mods_dir)?;
+        let temp = temp_path(&destination);
+        let _ = std::fs::remove_file(&temp);
+        let copied = (|| -> Result<()> {
+            std::fs::copy(bundle, &temp)?;
+            if destination.exists() {
+                std::fs::remove_file(&destination)?;
+            }
+            std::fs::rename(&temp, &destination)?;
+            Ok(())
+        })();
+        if let Err(error) = copied {
+            let _ = std::fs::remove_file(&temp);
+            return Err(error);
+        }
+    }
+
+    Ok(InstallReport {
+        bundle: bundle.to_path_buf(),
+        game_dir: game_dir.to_path_buf(),
+        destination,
+        dry_run,
+        bytes: source_bytes,
+        sha256: validation.sha256.clone(),
+        validation,
+    })
+}
+
+fn manifest_string(
+    table: &toml::Table,
+    key: &str,
+    errors: &mut Vec<String>,
+    required: bool,
+) -> Option<String> {
+    match table.get(key) {
+        Some(toml::Value::String(value)) => Some(value.clone()),
+        Some(_) => {
+            errors.push(format!("manifest key {key:?} must be a string"));
+            None
+        }
+        None => {
+            if required {
+                errors.push(format!("manifest is missing {key:?}"));
+            }
+            None
+        }
+    }
+}
+
+fn valid_horizon_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn hash_file(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex::encode(hasher.finalize()))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -943,5 +1455,196 @@ authors = "Ada, Grace"
         assert!(!valid_entry_path("assets/Examplemod/a.png"));
         assert!(!valid_entry_path("../escape"));
         assert!(!valid_entry_path("assets//a.png"));
+    }
+
+    fn exported_bundle(temp: &Path) -> (PathBuf, PathBuf) {
+        let jar = temp.join("examplemod.jar");
+        let bundle = temp.join("examplemod.hmod");
+        fixture_jar(&jar);
+        export_jar(&jar, &bundle, &ExportOptions::default()).unwrap();
+        (jar, bundle)
+    }
+
+    #[test]
+    fn validates_a_bundle_that_export_produced() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, bundle) = exported_bundle(temp.path());
+        let report = validate_content_bundle(&bundle).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.id.as_deref(), Some("examplemod"));
+        assert_eq!(report.version.as_deref(), Some("1.2.3"));
+        assert_eq!(report.api.as_deref(), Some(CONTENT_API));
+        assert_eq!(report.namespaces, vec!["examplemod".to_string()]);
+        assert_eq!(report.files, 5);
+        assert_eq!(report.block_definitions, 0);
+        assert_eq!(report.item_definitions, 0);
+        assert_eq!(report.sha256.len(), 64);
+    }
+
+    #[test]
+    fn validation_reports_manifest_and_namespace_errors() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("broken.hmod");
+        write_zip(
+            &bundle,
+            &[
+                (
+                    MANIFEST_NAME,
+                    br#"
+id = "broken_mod"
+version = "1"
+api = "0.2"
+capabilities = ["registries"]
+typo = "refused"
+"#,
+                ),
+                ("assets/other_mod/lang/en_us.json", b"{}"),
+                ("data/minecraft/not_a_tag/x.json", b"{}"),
+                ("assets/broken_mod/horizon/block/ruby.json", b"{}"),
+            ],
+        );
+
+        let report = validate_content_bundle(&bundle).unwrap();
+        assert!(!report.valid);
+        let errors = report.errors.join("\n");
+        assert!(errors.contains("unknown manifest key \"typo\""), "{errors}");
+        assert!(errors.contains("\"other_mod\""), "{errors}");
+        assert!(
+            errors.contains("data/minecraft/not_a_tag/x.json"),
+            "{errors}"
+        );
+        assert!(report.warnings.iter().any(|w| w.contains("side")));
+
+        let missing_capability = temp.path().join("no_capability.hmod");
+        write_zip(
+            &missing_capability,
+            &[
+                (
+                    MANIFEST_NAME,
+                    b"id = \"broken_mod\"\nversion = \"1\"\napi = \"0.2\"\n",
+                ),
+                ("assets/broken_mod/lang/en_us.json", b"{}"),
+            ],
+        );
+        let report = validate_content_bundle(&missing_capability).unwrap();
+        assert!(!report.valid);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("capabilities")));
+
+        let bad_api = temp.path().join("bad_api.hmod");
+        write_zip(
+            &bad_api,
+            &[(
+                MANIFEST_NAME,
+                b"id = \"broken_mod\"\nversion = \"1\"\napi = \"0.9\"\ncapabilities = [\"registries\"]\n",
+            )],
+        );
+        let report = validate_content_bundle(&bad_api).unwrap();
+        assert!(!report.valid);
+        assert!(report.errors.iter().any(|error| error.contains("api")));
+    }
+
+    #[test]
+    fn validation_reads_block_and_item_declarations() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("content.hmod");
+        write_zip(
+            &bundle,
+            &[
+                (
+                    MANIFEST_NAME,
+                    b"id = \"content_mod\"\nversion = \"1\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+                ),
+                (
+                    "data/content_mod/horizon/block/ruby_block.json",
+                    br#"{"template": "minecraft:iron_block", "item": true}"#,
+                ),
+                (
+                    "data/content_mod/horizon/item/ruby.json",
+                    br#"{"template": "minecraft:iron_ingot"}"#,
+                ),
+            ],
+        );
+
+        let report = validate_content_bundle(&bundle).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.block_definitions, 1);
+        assert_eq!(report.item_definitions, 1);
+
+        let broken = temp.path().join("broken_declaration.hmod");
+        write_zip(
+            &broken,
+            &[
+                (
+                    MANIFEST_NAME,
+                    b"id = \"content_mod\"\nversion = \"1\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+                ),
+                (
+                    "data/content_mod/horizon/block/ruby_block.json",
+                    br#"{"template": "not_a_template"}"#,
+                ),
+            ],
+        );
+        let report = validate_content_bundle(&broken).unwrap();
+        assert!(!report.valid);
+        assert!(report.errors.iter().any(|error| error.contains("template")));
+    }
+
+    #[test]
+    fn installs_a_validated_bundle_into_horizon_mods() {
+        let temp = tempfile::tempdir().unwrap();
+        let (_, bundle) = exported_bundle(temp.path());
+        let game = temp.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+
+        let dry = install_content_bundle(&bundle, &game, false, true).unwrap();
+        assert!(dry.dry_run);
+        assert_eq!(
+            dry.destination,
+            game.join("horizon-mods").join("examplemod.hmod")
+        );
+        assert!(!game.join("horizon-mods").exists());
+
+        let installed = install_content_bundle(&bundle, &game, false, false).unwrap();
+        assert!(!installed.dry_run);
+        assert!(installed.destination.is_file());
+        assert_eq!(
+            std::fs::read(&installed.destination).unwrap(),
+            std::fs::read(&bundle).unwrap()
+        );
+
+        let error = install_content_bundle(&bundle, &game, false, false).unwrap_err();
+        assert!(error.to_string().contains("--force"), "{error}");
+
+        let replaced = install_content_bundle(&bundle, &game, true, false).unwrap();
+        assert!(replaced.destination.is_file());
+    }
+
+    #[test]
+    fn install_refuses_an_invalid_bundle_and_a_missing_game_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("bad.hmod");
+        write_zip(
+            &bundle,
+            &[(
+                MANIFEST_NAME,
+                b"id = \"bad_mod\"\nversion = \"1\"\napi = \"0.2\"\n",
+            )],
+        );
+        let game = temp.path().join("game");
+        std::fs::create_dir(&game).unwrap();
+        let error = install_content_bundle(&bundle, &game, false, false).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("not a valid Horizon content bundle"));
+
+        let other = temp.path().join("other");
+        std::fs::create_dir(&other).unwrap();
+        let valid = exported_bundle(&other).1;
+        let missing = temp.path().join("no_such_game");
+        let error = install_content_bundle(&valid, &missing, false, true).unwrap_err();
+        assert!(error.to_string().contains("does not exist"));
     }
 }

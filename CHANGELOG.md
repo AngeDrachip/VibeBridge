@@ -6,6 +6,20 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `vibe horizon validate <hmod>`: read-only checks of a content bundle's
+  manifest, namespaces, entry paths, documented limits, and block/item
+  declarations.
+- `vibe horizon install <hmod> --game-dir <dir>`: validate a bundle and copy it
+  into Horizon's `horizon-mods/` folder, with `--dry-run` and `--force`.
+- SHA-256 of every validated or installed bundle.
+
+### Changed
+
+- Repository and homepage URLs now point at
+  `https://github.com/AngeDrachip/VibeBridge`.
+
 ## [0.1.0] - 2026-11-06
 
 ### Added

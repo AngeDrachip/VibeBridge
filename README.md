@@ -104,6 +104,13 @@ target\release\vibe.exe run java\test-mods\build
 target\release\vibe.exe horizon export java\test-mods\build\hello-forge.jar `
   --output dist\hello-forge.hmod
 
+# Check the bundle against the documented Horizon content rules.
+target\release\vibe.exe horizon validate dist\hello-forge.hmod
+
+# Copy a validated bundle into <game-dir>\horizon-mods (dry run first).
+target\release\vibe.exe horizon install dist\hello-forge.hmod `
+  --game-dir "%APPDATA%\.minecraft" --dry-run
+
 # Probe a local Horizon control surface (optional).
 target\release\vibe.exe horizon probe
 ```
@@ -130,6 +137,8 @@ Every command accepts `--json` for machine-readable output.
 | `vibe run <paths...>` | Start the JVM sidecar, load runnable jars, run the lifecycle. | `0` lifecycle ok, `3` nothing runnable, `4` runtime failure |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
+| `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
+| `vibe horizon install <hmod>` | Copy a validated bundle into `<game-dir>/horizon-mods/`. | `0` success, `1` error |
 
 Useful `run` options:
 
@@ -190,6 +199,19 @@ claimed namespaces. Export:
 
 The original jar is not changed. The export result includes its SHA-256 so the
 source can be identified.
+
+`vibe horizon validate` opens an existing `.hmod` read-only and checks the
+manifest, id/side/API values, claimed namespaces, entry paths, documented size
+limits, and first-level block/item declarations. It returns exit code `2` when
+the bundle is invalid. This is not a replacement for Horizon's own
+`cargo horizon-mod check`; it covers what Vibe can verify from the documented
+format.
+
+`vibe horizon install` validates a bundle and copies it into
+`<game-dir>/horizon-mods/`, the folder Horizon reads content mods from. It does
+not enable the mod: Horizon keeps that switch in `horizon-mods.txt`, and Vibe
+never edits a game's settings. Use `--dry-run` to see the destination and hash
+without writing, and `--force` to replace a file with the same name.
 
 ## Repository layout
 

@@ -15,8 +15,8 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.85"
 license = "MIT"
-repository = "https://github.com/VibeBridge/VibeBridge"
-homepage = "https://github.com/VibeBridge/VibeBridge"
+repository = "https://github.com/AngeDrachip/VibeBridge"
+homepage = "https://github.com/AngeDrachip/VibeBridge"
 description = "A compatibility layer for running Minecraft Forge mods on Horizon."
 
 [workspace.dependencies]
