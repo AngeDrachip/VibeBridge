@@ -42,6 +42,7 @@ jobs:
         run: |
           bash java/build.sh
           bash java/test-mods/build.sh
+          bash java/test-mods/blocked/build.sh
 
       - name: Build Java runtime and fixtures (Windows)
         if: runner.os == 'Windows'
@@ -50,6 +51,8 @@ jobs:
           powershell -NoProfile -ExecutionPolicy Bypass -File java/build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           powershell -NoProfile -ExecutionPolicy Bypass -File java/test-mods/build.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          powershell -NoProfile -ExecutionPolicy Bypass -File java/test-mods/blocked/build.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Check formatting

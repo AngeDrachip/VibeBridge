@@ -1,0 +1,9 @@
+modLoader = "kotlinfml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "unsupported_loader"
+version = "1.0.0"
+displayName = "Unsupported loader fixture"
+description = "Vibe blocked-case fixture: declares a language loader Vibe does not implement."

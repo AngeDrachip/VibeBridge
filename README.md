@@ -73,6 +73,7 @@ On Windows, make sure `JAVA_HOME` points at JDK 17+ before building. A Java 8
 $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"
 powershell -NoProfile -ExecutionPolicy Bypass -File java\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\blocked\build.ps1
 cargo build --release
 ```
 
@@ -81,6 +82,7 @@ cargo build --release
 export JAVA_HOME=/path/to/jdk-17
 bash java/build.sh
 bash java/test-mods/build.sh
+bash java/test-mods/blocked/build.sh
 cargo build --release
 ```
 
@@ -247,9 +249,12 @@ cargo test --workspace
 
 `VIBE_REQUIRE_JAVA_TESTS=1` turns missing Java or missing fixture jars into test
 failures instead of skips. The integration tests start a real JVM, load both
-fixtures, run the lifecycle, and export the fixture resources as a Horizon
-content bundle. The CI workflow is configured to run the same checks on Linux
-and Windows with JDK 17.
+runnable fixtures, run the lifecycle, and export the fixture resources as a
+Horizon content bundle. A second suite inspects compiled blocked-case jars and
+asserts one hard blocker per fixture (Minecraft classes, unsupported Forge API,
+external library, Mixin, access transformer, coremod, missing entrypoint,
+unsupported loader) plus the nested-jar warning. The CI workflow is configured
+to run the same checks on Linux and Windows with JDK 17.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before adding API surface. The project is
 clean-room: do not copy Forge, Minecraft, or Horizon source into this repository.

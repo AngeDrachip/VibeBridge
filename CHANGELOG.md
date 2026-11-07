@@ -22,6 +22,10 @@ All notable changes to Vibe are documented here. The format follows
   512 skipped files with a reason, reports `pack.mcmeta` pack formats and the
   declared Minecraft dependency range, and prints a skip summary in the human
   output.
+- Nine compiled blocked-case fixtures with an integration test asserting one
+  hard blocker per case (Minecraft classes, unsupported Forge API, external
+  library, Mixin, access transformer, coremod, missing entrypoint, unsupported
+  loader) and the nested-jar warning. CI builds them on Linux and Windows.
 
 ### Changed
 

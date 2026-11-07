@@ -1,0 +1,9 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "plain_fixture"
+version = "1.0.0"
+displayName = "Nested jar fixture"
+description = "Vibe blocked-case fixture: carries a jar-in-jar entry."

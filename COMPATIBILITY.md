@@ -223,6 +223,26 @@ event records: 9/9 succeeded
 The fixture resources also export to a Horizon `.hmod` whose manifest is
 validated (`api = "0.2"`, `capabilities = ["registries"]`).
 
+### Blocked-case fixtures
+
+`crates/vibe-cli/tests/blocked_fixtures.rs` inspects nine compiled jars and
+asserts the exact blocker each one produces:
+
+| Fixture | Asserted result |
+| --- | --- |
+| `blocked-minecraft-ref` | `blocked`, exactly one error: `MinecraftClasses` |
+| `blocked-unsupported-forge` | `blocked`, `UnsupportedForgeApi` |
+| `blocked-external-lib` | `blocked`, `ExternalClasses` (`com.google.gson.Gson`) |
+| `blocked-mixin` | `blocked`, `MixinTransformer` |
+| `blocked-access-transformer` | `blocked`, `AccessTransformer` |
+| `blocked-coremod` | `blocked`, `Coremod` |
+| `blocked-no-entrypoint` | `blocked`, `MissingEntrypoint` |
+| `blocked-unsupported-loader` | `blocked`, `UnsupportedLoader` |
+| `blocked-nested-jar` | `runnable-subset` with one `NestedJars` warning |
+
+The fixtures are compiled by `java/test-mods/blocked/build.ps1` (or `build.sh`).
+They test Vibe's own inspection, not third-party mods.
+
 These fixtures test Vibe's own subset. They do **not** demonstrate
 compatibility with any third-party Forge mod. No specific third-party mod is
 claimed as supported until a test for it is added and recorded here.

@@ -1,0 +1,9 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "minecraft_ref"
+version = "1.0.0"
+displayName = "Minecraft reference fixture"
+description = "Vibe blocked-case fixture: references a net.minecraft class."

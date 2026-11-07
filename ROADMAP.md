@@ -45,7 +45,7 @@ result easier to trust.
 - [x] Add per-entry export explanations in `--json` (why each file was included
       or skipped).
 - [ ] Improve `inspect` evidence grouping for large jars.
-- [ ] Add fixtures for blocked cases: Minecraft reference, Mixin, access
+- [x] Add fixtures for blocked cases: Minecraft reference, Mixin, access
       transformer, coremod, unsupported Forge API, nested jar.
 
 Exit criteria: each blocker kind has a fixture and an asserted report; no new

@@ -1,0 +1,9 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "external_lib"
+version = "1.0.0"
+displayName = "External library fixture"
+description = "Vibe blocked-case fixture: references a library the jar does not bundle."

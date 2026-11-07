@@ -1,0 +1,9 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "no_entrypoint"
+version = "1.0.0"
+displayName = "No entrypoint fixture"
+description = "Vibe blocked-case fixture: javafml without a class carrying @Mod."

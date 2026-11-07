@@ -1,0 +1,9 @@
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "unsupported_forge"
+version = "1.0.0"
+displayName = "Unsupported Forge API fixture"
+description = "Vibe blocked-case fixture: references a Forge API class outside the shim."
