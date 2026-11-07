@@ -27,7 +27,8 @@ Current release: **0.1.0** (proof of concept).
 - **Classifies** each jar as `runnable-subset`, `content-only`, `blocked`, or
   `unknown`, with evidence for every blocker.
 - **Plans a load** with duplicate detection, dependency ordering, missing
-  dependency reporting, namespace conflict detection, and cycle detection.
+  dependency reporting, declared version ranges and mismatches, namespace
+  conflict detection, cycle detection, and optional side-aware filtering.
 - **Runs the supported subset** in a real JVM: isolated class loaders,
   `@Mod` construction, Forge-shaped event buses, legacy `@Mod.EventHandler`
   callbacks, modern `@SubscribeEvent` listeners, sided setup filtering, and a
@@ -99,6 +100,9 @@ target\release\vibe.exe inspect java\test-mods\build
 # Build a dependency-ordered plan.
 target\release\vibe.exe plan java\test-mods\build
 
+# Plan a server only: client-only mods and dependencies are not required.
+target\release\vibe.exe plan java\test-mods\build --side SERVER
+
 # Run the fixtures in the Java sidecar and print the lifecycle report.
 target\release\vibe.exe run java\test-mods\build
 
@@ -135,7 +139,7 @@ Every command accepts `--json` for machine-readable output.
 | --- | --- | --- |
 | `vibe doctor` | Check Java 17+, the Vibe runtime, and `horizon-ctl` availability. | `0` healthy, `1` not healthy |
 | `vibe inspect <paths...>` | Read-only analysis of jars and directories. | `0` no inspection errors, `1` errors |
-| `vibe plan <paths...>` | Dependency/namespace plan without executing code. | `0` no inspection errors, `1` errors |
+| `vibe plan <paths...>` | Dependency/namespace plan without executing code; `--side CLIENT\|SERVER` plans one side. | `0` no inspection errors, `1` errors |
 | `vibe run <paths...>` | Start the JVM sidecar, load runnable jars, run the lifecycle. | `0` lifecycle ok, `3` nothing runnable, `4` runtime failure |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
@@ -151,6 +155,13 @@ Useful `run` options:
 - `--timeout-ms <n>` sets startup/request timeouts (default 30000).
 - `--include-blocked` sends blocked jars to the runtime for diagnostics only.
   It does not make unsupported classes exist.
+
+Useful `plan` options:
+
+- `--side CLIENT|SERVER` keeps mods declared for that side, lists mods declared
+  for the other side as excluded, and ignores dependencies that only apply to
+  the other side. Without `--side`, every scanned mod is planned. A mod with no
+  declared side is kept on both sides.
 
 Useful export options:
 

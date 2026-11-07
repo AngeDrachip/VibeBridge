@@ -154,6 +154,29 @@ registry freeze, resource reload, server start, network channel setup, or
 data-generation phase. `FMLServerStartingEvent` exists for linkage but is not
 posted.
 
+## Load planning
+
+`vibe plan` reads metadata only. It reports duplicate mod ids, dependency
+ordering, missing dependencies, declared version ranges, version mismatches,
+namespace conflicts, and cycles. It never downloads, resolves, or executes a
+mod.
+
+`--side CLIENT|SERVER` makes the plan side-aware:
+
+- A mod declared `clientSideOnly` or with `side = "CLIENT"` is excluded from a
+  server plan, and the reverse for a server-only mod. Excluded mods are listed
+  with a reason rather than silently dropped.
+- A dependency declared `side = "CLIENT"` is not reported missing on a server
+  plan. A missing dependency keeps its declared side and version range in the
+  report.
+- A mod or dependency with no declared side is treated as applying to both
+  sides. Vibe does not guess.
+
+A dependency that is present but outside its declared range is reported as a
+version mismatch, with the raw range and the found version. The range parser is
+a pragmatic Maven subset, not a full Maven resolver; an unparseable range is
+not reported as a mismatch.
+
 ## Blockers
 
 | Blocker | Severity | Meaning |

@@ -38,8 +38,8 @@ result easier to trust.
 - [x] Resolve more of the mod's own class dependencies during inspection and
       report missing third-party libraries as their own blocker instead of
       discovering them only at construction time.
-- [ ] Parse and report `mods.toml` dependency ranges more thoroughly, including
-      side-specific dependencies.
+- [x] Parse and report `mods.toml` dependency ranges more thoroughly, including
+      side-specific dependencies and side-aware `vibe plan --side` filtering.
 - [x] Report pack-format/version hints during content export so users can see
       when resources target a different Minecraft era.
 - [x] Add per-entry export explanations in `--json` (why each file was included

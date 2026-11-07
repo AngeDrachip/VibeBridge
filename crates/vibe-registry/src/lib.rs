@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use vibe_core::metadata::{Dependency, ModSide};
+use vibe_core::version::VersionRange;
 use vibe_core::{ModId, Verdict};
 use vibe_loader::JarInspection;
 
@@ -29,6 +30,32 @@ pub struct MissingDependency {
     pub owner: ModId,
     pub dependency: String,
     pub mandatory: bool,
+    /// The side on which the dependency was declared. Only dependencies that
+    /// apply to the planned side are reported.
+    pub side: ModSide,
+    /// The declared Maven range, kept verbatim.
+    pub version_range: String,
+    pub reason: String,
+}
+
+/// A present dependency whose version does not satisfy the declared range.
+/// The range is reported as text; Vibe does not pick a version or download one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VersionMismatch {
+    pub owner: ModId,
+    pub dependency: String,
+    pub required: String,
+    pub found: String,
+    pub mandatory: bool,
+    pub side: ModSide,
+}
+
+/// A mod left out of a side-specific plan because it declares the other side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExcludedMod {
+    pub id: ModId,
+    pub side: ModSide,
+    pub jar: PathBuf,
     pub reason: String,
 }
 
@@ -40,9 +67,15 @@ pub struct DuplicateId {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegistryPlan {
+    /// The side this plan was built for; `None` means every scanned jar.
+    pub side: Option<ModSide>,
     pub mods: Vec<RegisteredMod>,
     pub load_order: Vec<ModId>,
     pub missing_dependencies: Vec<MissingDependency>,
+    pub version_mismatches: Vec<VersionMismatch>,
+    /// Mods excluded because they declare the other side. They are still
+    /// scanned and inspected; they are simply not planned on this side.
+    pub excluded_mods: Vec<ExcludedMod>,
     pub duplicate_ids: Vec<DuplicateId>,
     pub cycles: Vec<Vec<ModId>>,
     pub namespace_owners: BTreeMap<String, Vec<ModId>>,
@@ -69,11 +102,25 @@ impl RegistryPlan {
     }
 }
 
-/// Build a plan from inspected jars.
+/// Build a plan from inspected jars, covering both sides.
 pub fn plan(inspections: &[JarInspection]) -> RegistryPlan {
+    plan_for_side(inspections, None)
+}
+
+/// Build a plan for one runtime side.
+///
+/// Mods that declare the other side are listed in `excluded_mods` rather than
+/// dropped. Dependencies declared only for the other side are not reported as
+/// missing. `None` plans every scanned jar, which is what `vibe plan` did
+/// before side selection existed.
+pub fn plan_for_side(inspections: &[JarInspection], side: Option<ModSide>) -> RegistryPlan {
+    let (mods, duplicate_ids) = collect_mods(inspections);
+    build_plan(mods, duplicate_ids, side)
+}
+
+fn collect_mods(inspections: &[JarInspection]) -> (Vec<RegisteredMod>, Vec<DuplicateId>) {
     let mut mods = Vec::new();
     let mut seen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
-
     for inspection in inspections {
         let mut namespaces: BTreeSet<String> = BTreeSet::new();
         namespaces.extend(inspection.asset_namespaces.iter().cloned());
@@ -116,26 +163,82 @@ pub fn plan(inspections: &[JarInspection]) -> RegistryPlan {
     }
 
     mods.sort_by(|a, b| a.id.cmp(&b.id));
+    mods.sort_by(|a, b| a.id.cmp(&b.id));
     let duplicate_ids: Vec<DuplicateId> = seen
         .into_iter()
         .filter(|(_, jars)| jars.len() > 1)
         .map(|(id, jars)| DuplicateId { id, jars })
         .collect();
+    (mods, duplicate_ids)
+}
 
-    let known: BTreeSet<String> = mods.iter().map(|m| m.id.to_string()).collect();
+fn build_plan(
+    mut all_mods: Vec<RegisteredMod>,
+    duplicate_ids: Vec<DuplicateId>,
+    side: Option<ModSide>,
+) -> RegistryPlan {
+    all_mods.sort_by(|a, b| a.id.cmp(&b.id));
+    let mut mods = Vec::new();
+    let mut excluded_mods = Vec::new();
+    for module in all_mods {
+        if side
+            .map(|planned| module.side.applies_to(planned))
+            .unwrap_or(true)
+        {
+            mods.push(module);
+        } else {
+            let planned = side.unwrap_or(ModSide::Both);
+            excluded_mods.push(ExcludedMod {
+                id: module.id,
+                side: module.side,
+                jar: module.jar,
+                reason: format!(
+                    "declared side {} does not run on a {} plan",
+                    module.side.as_str(),
+                    planned.as_str()
+                ),
+            });
+        }
+    }
+
+    let known: BTreeMap<String, &RegisteredMod> = mods
+        .iter()
+        .map(|module| (module.id.to_string(), module))
+        .collect();
     let mut missing_dependencies = Vec::new();
+    let mut version_mismatches = Vec::new();
     for owner in &mods {
         for dep in &owner.dependencies {
             if is_environment_dependency(&dep.mod_id) {
                 continue;
             }
-            if !known.contains(&dep.mod_id) {
-                missing_dependencies.push(MissingDependency {
+            if let Some(planned) = side {
+                if !dep.side.applies_to(planned) {
+                    continue;
+                }
+            }
+            match known.get(&dep.mod_id) {
+                None => missing_dependencies.push(MissingDependency {
                     owner: owner.id.clone(),
                     dependency: dep.mod_id.clone(),
                     mandatory: dep.mandatory,
+                    side: dep.side,
+                    version_range: dep.version_range.clone(),
                     reason: "not present in the scanned mod set".into(),
-                });
+                }),
+                Some(found) => {
+                    if range_is_satisfied(&dep.version_range, &found.version) {
+                        continue;
+                    }
+                    version_mismatches.push(VersionMismatch {
+                        owner: owner.id.clone(),
+                        dependency: dep.mod_id.clone(),
+                        required: dep.version_range.clone(),
+                        found: found.version.clone(),
+                        mandatory: dep.mandatory,
+                        side: dep.side,
+                    });
+                }
             }
         }
     }
@@ -144,13 +247,29 @@ pub fn plan(inspections: &[JarInspection]) -> RegistryPlan {
     let (namespace_owners, namespace_conflicts) = namespace_index(&mods);
 
     RegistryPlan {
+        side,
         mods,
         load_order,
         missing_dependencies,
+        version_mismatches,
+        excluded_mods,
         duplicate_ids,
         cycles,
         namespace_owners,
         namespace_conflicts,
+    }
+}
+
+/// An empty, `*`, `any`, or unparseable range never counts as a mismatch:
+/// Vibe reports only what it can establish from the declared text.
+fn range_is_satisfied(range: &str, version: &str) -> bool {
+    let range = range.trim();
+    if range.is_empty() || range == "*" || range.eq_ignore_ascii_case("any") {
+        return true;
+    }
+    match VersionRange::parse(range) {
+        Ok(parsed) => parsed.matches(version),
+        Err(_) => true,
     }
 }
 
@@ -289,6 +408,10 @@ mod tests {
     use super::*;
 
     fn module(id: &str, deps: &[(&str, &str)]) -> RegisteredMod {
+        module_on(id, ModSide::Both, deps)
+    }
+
+    fn module_on(id: &str, side: ModSide, deps: &[(&str, &str)]) -> RegisteredMod {
         RegisteredMod {
             id: ModId::parse(id).unwrap(),
             version: "1".into(),
@@ -296,7 +419,7 @@ mod tests {
             jar: PathBuf::from(format!("{id}.jar")),
             entrypoint: None,
             verdict: Verdict::RunnableSubset,
-            side: ModSide::Both,
+            side,
             dependencies: deps
                 .iter()
                 .map(|(mod_id, ordering)| Dependency {
@@ -340,5 +463,111 @@ mod tests {
         b.namespaces.push("shared".into());
         let (_, conflicts) = namespace_index(&[a, b]);
         assert!(conflicts.contains_key("shared"));
+    }
+
+    fn plan_of(mods: Vec<RegisteredMod>, side: Option<ModSide>) -> RegistryPlan {
+        build_plan(mods, Vec::new(), side)
+    }
+
+    fn owner_with_dependency(side: ModSide, dependency_side: ModSide) -> RegisteredMod {
+        let mut owner = module_on("owner", side, &[("client_lib", "AFTER")]);
+        owner.dependencies[0].side = dependency_side;
+        owner
+    }
+
+    #[test]
+    fn side_specific_missing_dependencies_follow_the_plan() {
+        let client_missing = plan_of(
+            vec![owner_with_dependency(ModSide::Both, ModSide::Client)],
+            Some(ModSide::Client),
+        );
+        assert_eq!(client_missing.missing_dependencies.len(), 1);
+        assert_eq!(client_missing.missing_dependencies[0].side, ModSide::Client);
+
+        let server = plan_of(
+            vec![owner_with_dependency(ModSide::Both, ModSide::Client)],
+            Some(ModSide::Server),
+        );
+        assert!(
+            server.missing_dependencies.is_empty(),
+            "{:?}",
+            server.missing_dependencies
+        );
+
+        let both = plan_of(
+            vec![owner_with_dependency(ModSide::Both, ModSide::Client)],
+            None,
+        );
+        assert_eq!(both.missing_dependencies.len(), 1);
+    }
+
+    #[test]
+    fn a_mod_for_the_other_side_is_excluded_not_dropped() {
+        let plan = plan_of(
+            vec![
+                module_on("client_only", ModSide::Client, &[]),
+                module_on("server_only", ModSide::Server, &[]),
+                module_on("either", ModSide::Both, &[]),
+            ],
+            Some(ModSide::Server),
+        );
+        assert_eq!(
+            plan.mods
+                .iter()
+                .map(|module| module.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["either", "server_only"]
+        );
+        assert_eq!(plan.excluded_mods.len(), 1);
+        assert_eq!(plan.excluded_mods[0].id.as_str(), "client_only");
+        assert_check_json_round_trip(&plan);
+    }
+
+    #[test]
+    fn an_unknown_side_is_kept_on_both_sides() {
+        for side in [ModSide::Client, ModSide::Server] {
+            let plan = plan_of(
+                vec![module_on("unclear", ModSide::Unknown, &[])],
+                Some(side),
+            );
+            assert_eq!(plan.mods.len(), 1, "{side:?}");
+            assert!(plan.excluded_mods.is_empty(), "{side:?}");
+        }
+    }
+
+    fn assert_check_json_round_trip(plan: &RegistryPlan) {
+        let text = serde_json::to_string(plan).unwrap();
+        let parsed: RegistryPlan = serde_json::from_str(&text).unwrap();
+        assert_eq!(parsed.mods.len(), plan.mods.len());
+        assert_eq!(parsed.excluded_mods.len(), plan.excluded_mods.len());
+    }
+
+    #[test]
+    fn reports_present_but_out_of_range_dependencies() {
+        let mut owner = module_on("owner", ModSide::Both, &[("lib", "AFTER")]);
+        owner.dependencies[0].version_range = "[2,)".into();
+        let mut lib = module("lib", &[]);
+        lib.version = "1.5".into();
+
+        let plan = plan_of(vec![owner, lib], Some(ModSide::Server));
+        assert!(plan.missing_dependencies.is_empty());
+        assert_eq!(plan.version_mismatches.len(), 1);
+        assert_eq!(plan.version_mismatches[0].required, "[2,)");
+        assert_eq!(plan.version_mismatches[0].found, "1.5");
+    }
+
+    #[test]
+    fn a_satisfied_or_unconstrained_range_is_not_a_mismatch() {
+        let mut owner = module_on("owner", ModSide::Both, &[("lib", "AFTER")]);
+        owner.dependencies[0].version_range = "[1,2)".into();
+        let mut lib = module("lib", &[]);
+        lib.version = "1.5".into();
+        let plan = plan_of(vec![owner, lib], None);
+        assert!(plan.version_mismatches.is_empty());
+
+        let mut wildcard = module_on("other", ModSide::Both, &[("lib", "AFTER")]);
+        wildcard.dependencies[0].version_range = String::new();
+        let plan = plan_of(vec![wildcard, module("lib", &[])], None);
+        assert!(plan.version_mismatches.is_empty());
     }
 }

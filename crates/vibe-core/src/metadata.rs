@@ -49,6 +49,26 @@ impl ModSide {
             _ => Self::Unknown,
         }
     }
+
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Client => "client",
+            Self::Server => "server",
+            Self::Both => "both",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether something declared with this side takes part in a plan for
+    /// `side`. An unknown side is kept on both sides: dropping it silently
+    /// would hide a dependency Vibe cannot classify.
+    pub fn applies_to(self, side: ModSide) -> bool {
+        match side {
+            ModSide::Client => matches!(self, Self::Client | Self::Both | Self::Unknown),
+            ModSide::Server => matches!(self, Self::Server | Self::Both | Self::Unknown),
+            ModSide::Both | ModSide::Unknown => true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

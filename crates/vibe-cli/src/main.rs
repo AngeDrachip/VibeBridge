@@ -16,12 +16,13 @@ use vibe_bridge::{
     default_runtime_path, detect_all_java, locate_java, RuntimeClient, RuntimeOptions,
 };
 use vibe_core::error::{Result, VibeError};
+use vibe_core::metadata::ModSide;
 use vibe_core::Verdict;
 use vibe_horizon::{
     export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
 };
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
-use vibe_registry::plan;
+use vibe_registry::plan_for_side;
 
 #[derive(Parser)]
 #[command(
@@ -79,6 +80,10 @@ struct PlanArgs {
     /// Jars or directories containing jars.
     #[arg(required = true)]
     paths: Vec<PathBuf>,
+    /// Plan for one side. Mods and dependencies declared for the other side
+    /// are reported but not required.
+    #[arg(long, value_parser = ["CLIENT", "SERVER", "client", "server"])]
+    side: Option<String>,
 }
 
 #[derive(Args)]
@@ -424,7 +429,8 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
             Err(error) => errors.push(json!({ "path": jar, "error": error.to_string() })),
         }
     }
-    let plan = plan(&inspections);
+    let side = args.side.as_deref().map(ModSide::parse);
+    let plan = plan_for_side(&inspections, side);
 
     if json {
         print_json(&json!({
@@ -433,8 +439,14 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
             "missing_paths": discovery.missing_paths,
         }))?;
     } else {
-        println!("Vibe load plan");
+        match plan.side {
+            Some(side) => println!("Vibe load plan for {}", side.as_str()),
+            None => println!("Vibe load plan"),
+        }
         println!("  mods: {}", plan.mods.len());
+        for excluded in &plan.excluded_mods {
+            println!("  EXCLUDED {}: {}", excluded.id, excluded.reason);
+        }
         println!(
             "  load order: {}",
             plan.load_order
@@ -456,14 +468,31 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
         }
         for missing in &plan.missing_dependencies {
             println!(
-                "  MISSING {} needs {}{}",
+                "  MISSING {} needs {}{} [side {}, range {}]",
                 missing.owner,
                 missing.dependency,
                 if missing.mandatory {
                     " (required)"
                 } else {
                     " (optional)"
-                }
+                },
+                missing.side.as_str(),
+                missing.version_range
+            );
+        }
+        for mismatch in &plan.version_mismatches {
+            println!(
+                "  VERSION {} needs {} {}{} but found {} [side {}]",
+                mismatch.owner,
+                mismatch.dependency,
+                mismatch.required,
+                if mismatch.mandatory {
+                    " (required)"
+                } else {
+                    " (optional)"
+                },
+                mismatch.found,
+                mismatch.side.as_str()
             );
         }
         for conflict in &plan.namespace_conflicts {

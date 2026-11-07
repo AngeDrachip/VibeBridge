@@ -26,6 +26,12 @@ All notable changes to Vibe are documented here. The format follows
   hard blocker per case (Minecraft classes, unsupported Forge API, external
   library, Mixin, access transformer, coremod, missing entrypoint, unsupported
   loader) and the nested-jar warning. CI builds them on Linux and Windows.
+- Side-aware load planning: `vibe plan --side CLIENT|SERVER` excludes mods
+  declared for the other side (listing them with a reason), ignores
+  dependencies that only apply to the other side, and reports each missing
+  dependency's declared side and version range.
+- Present dependencies are checked against their declared Maven range and
+  reported as version mismatches when they do not match.
 
 ### Changed
 
