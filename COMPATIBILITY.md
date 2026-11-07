@@ -196,6 +196,13 @@ not reported as a mismatch.
 | `ClassLoadError` | warning | Some class files could not be parsed during analysis. |
 | `NoForgeMetadata` | warning | No `mods.toml` / `mcmod.info` found. |
 
+For large jars, blockers keep at most 32 evidence entries as a sample, plus
+`evidence_total`, and group every entry by Java package (or path prefix) in
+`evidence_groups`. Human output prints the largest groups; `--json` has the
+full grouped counts. A jar that references hundreds of classes therefore shows
+categories such as `net.minecraft.world.level (214)` instead of a wall of class
+names. Group examples and the sample are explicitly labelled when truncated.
+
 ## Content export compatibility
 
 Export carries only files under claimed namespaces:

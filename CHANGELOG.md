@@ -18,6 +18,8 @@ All notable changes to Vibe are documented here. The format follows
   ships and the JDK/platform/Vibe shims, and reports missing third-party
   libraries as an `ExternalClasses` blocker with the classes and library groups
   in `--json`.
+- Blocker evidence is grouped by Java package or path prefix, with a bounded
+  sample, full `evidence_total`, and explicit truncation notes for large jars.
 - Content export now records every included file (path, kind, bytes) and up to
   512 skipped files with a reason, reports `pack.mcmeta` pack formats and the
   declared Minecraft dependency range, and prints a skip summary in the human

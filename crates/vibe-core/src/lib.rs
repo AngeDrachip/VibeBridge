@@ -13,7 +13,8 @@ pub mod metadata;
 pub mod version;
 
 pub use analysis::{
-    analyze, AnalysisFacts, Blocker, BlockerKind, CompatibilityReport, Severity, Verdict,
+    analyze, AnalysisFacts, Blocker, BlockerKind, CompatibilityReport, EvidenceGroup, Severity,
+    Verdict,
 };
 pub use error::{Result, VibeError};
 pub use ids::{ModId, ResourceLocation};

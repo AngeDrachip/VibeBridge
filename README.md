@@ -25,7 +25,7 @@ Current release: **0.1.0** (proof of concept).
   Forge classes, third-party library references, Mixin configs, access
   transformers, core plugins, and nested jars.
 - **Classifies** each jar as `runnable-subset`, `content-only`, `blocked`, or
-  `unknown`, with evidence for every blocker.
+  `unknown`, with evidence for every blocker, grouped by package for large jars.
 - **Plans a load** with duplicate detection, dependency ordering, missing
   dependency reporting, declared version ranges and mismatches, namespace
   conflict detection, cycle detection, and optional side-aware filtering.

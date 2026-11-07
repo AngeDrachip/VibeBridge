@@ -38,8 +38,30 @@ pub struct Blocker {
     pub kind: BlockerKind,
     pub severity: Severity,
     pub message: String,
+    /// A bounded sample of the evidence, at most 32 entries.
     pub evidence: Vec<String>,
+    /// How many evidence entries were found in total.
+    #[serde(default)]
+    pub evidence_total: usize,
+    /// Evidence grouped by package or path prefix, so a large jar stays
+    /// readable. Counts describe the full evidence, not the sample.
+    #[serde(default)]
+    pub evidence_groups: Vec<EvidenceGroup>,
+    /// Whether more groups existed than are listed here.
+    #[serde(default)]
+    pub evidence_groups_truncated: bool,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EvidenceGroup {
+    pub label: String,
+    pub count: usize,
+    pub examples: Vec<String>,
+}
+
+const MAX_EVIDENCE: usize = 32;
+const MAX_EVIDENCE_GROUPS: usize = 24;
+const MAX_GROUP_EXAMPLES: usize = 3;
 
 impl Blocker {
     fn new(kind: BlockerKind, severity: Severity, message: impl Into<String>) -> Self {
@@ -48,13 +70,79 @@ impl Blocker {
             severity,
             message: message.into(),
             evidence: Vec::new(),
+            evidence_total: 0,
+            evidence_groups: Vec::new(),
+            evidence_groups_truncated: false,
         }
     }
 
     fn with_evidence(mut self, evidence: impl IntoIterator<Item = String>) -> Self {
-        self.evidence = evidence.into_iter().take(32).collect();
+        let all: Vec<String> = evidence.into_iter().collect();
+        self.evidence_total = all.len();
+        let (mut groups, truncated) = group_evidence(&all);
+        groups.truncate(MAX_EVIDENCE_GROUPS);
+        self.evidence_groups = groups;
+        self.evidence_groups_truncated = truncated;
+        self.evidence = all.into_iter().take(MAX_EVIDENCE).collect();
         self
     }
+}
+
+/// Group class names by package and other evidence by path prefix.
+///
+/// Class names use their full package (`net.minecraft.world.level` for
+/// `net.minecraft.world.level.Level`); paths use the first two segments.
+/// Groups are sorted by descending size, then label, so the largest category
+/// appears first.
+fn group_evidence(evidence: &[String]) -> (Vec<EvidenceGroup>, bool) {
+    let mut groups: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    for item in evidence {
+        let label = evidence_label(item);
+        let entry = groups.entry(label).or_insert((0, Vec::new()));
+        entry.0 += 1;
+        if entry.1.len() < MAX_GROUP_EXAMPLES {
+            entry.1.push(item.clone());
+        }
+    }
+    let mut grouped: Vec<EvidenceGroup> = groups
+        .into_iter()
+        .map(|(label, (count, examples))| EvidenceGroup {
+            label,
+            count,
+            examples,
+        })
+        .collect();
+    grouped.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
+    let truncated = grouped.len() > MAX_EVIDENCE_GROUPS;
+    (grouped, truncated)
+}
+
+fn evidence_label(item: &str) -> String {
+    if item.contains('/') || item.contains('\\') {
+        let normalized = item.replace('\\', "/");
+        return normalized.split('/').take(2).collect::<Vec<_>>().join("/");
+    }
+    if is_class_name(item) {
+        let segments: Vec<&str> = item.split('.').collect();
+        let package = segments.len().saturating_sub(1).max(1);
+        return segments[..package].join(".");
+    }
+    item.to_string()
+}
+
+fn is_class_name(value: &str) -> bool {
+    let mut segments = 0;
+    for segment in value.split('.') {
+        segments += 1;
+        if segment.is_empty()
+            || !segment
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '$'))
+        {
+            return false;
+        }
+    }
+    segments >= 2
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -624,5 +712,79 @@ mod tests {
         let report = analyze(&facts);
         assert_eq!(report.verdict, Verdict::RunnableSubset);
         assert!(report.external_classes.is_empty());
+    }
+
+    #[test]
+    fn large_evidence_is_grouped_by_package_and_capped() {
+        let mut entry = class("com.example.ExampleMod", Some("examplemod"));
+        for index in 0..50 {
+            entry
+                .referenced_classes
+                .insert(format!("net.minecraft.world.level.Block{index}"));
+        }
+        for index in 0..30 {
+            entry
+                .referenced_classes
+                .insert(format!("net.minecraft.client.gui.screens.Screen{index}"));
+        }
+        for index in 0..10 {
+            entry
+                .referenced_classes
+                .insert(format!("net.minecraft.world.item.Item{index}"));
+        }
+        let facts = AnalysisFacts {
+            loader: Some(LoaderKind::JavaFml),
+            classes: vec![entry],
+            runtime_java_release: Some(17),
+            ..Default::default()
+        };
+        let report = analyze(&facts);
+        let blocker = report
+            .blockers
+            .iter()
+            .find(|blocker| blocker.kind == BlockerKind::MinecraftClasses)
+            .expect("Minecraft blocker");
+
+        assert_eq!(blocker.evidence_total, 90);
+        assert_eq!(blocker.evidence.len(), 32);
+        assert_eq!(
+            blocker
+                .evidence_groups
+                .iter()
+                .map(|group| group.count)
+                .sum::<usize>(),
+            90
+        );
+        assert_eq!(
+            blocker.evidence_groups[0].label,
+            "net.minecraft.world.level"
+        );
+        assert_eq!(blocker.evidence_groups[0].count, 50);
+        assert_eq!(blocker.evidence_groups[1].count, 30);
+        assert!(!blocker.evidence_groups_truncated);
+    }
+
+    #[test]
+    fn too_many_groups_are_truncated_but_flagged() {
+        let evidence: Vec<String> = (0..40)
+            .map(|index| format!("library{index}.component.Type"))
+            .collect();
+        let (groups, truncated) = group_evidence(&evidence);
+        assert_eq!(groups.len(), 40);
+        assert!(truncated);
+        assert_eq!(groups.iter().map(|group| group.count).sum::<usize>(), 40);
+    }
+
+    #[test]
+    fn path_evidence_is_grouped_by_directory() {
+        let evidence = vec![
+            "META-INF/jarjar/first.jar".to_string(),
+            "META-INF/jarjar/second.jar".to_string(),
+            "META-INF/accesstransformer.cfg".to_string(),
+        ];
+        let (groups, _) = group_evidence(&evidence);
+        assert!(groups
+            .iter()
+            .any(|group| group.label == "META-INF/jarjar" && group.count == 2));
     }
 }

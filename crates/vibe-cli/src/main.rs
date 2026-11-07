@@ -412,8 +412,42 @@ fn print_inspection(inspection: &JarInspection) {
     }
     for blocker in &inspection.report.blockers {
         println!("  {:?}: {}", blocker.severity, blocker.message);
-        for evidence in blocker.evidence.iter().take(6) {
-            println!("    - {evidence}");
+        if blocker.evidence_total > 1 && !blocker.evidence_groups.is_empty() {
+            for group in blocker.evidence_groups.iter().take(8) {
+                println!(
+                    "    {} ({}): {}",
+                    group.label,
+                    group.count,
+                    group.examples.join(", ")
+                );
+            }
+            let mut notes = Vec::new();
+            if blocker.evidence_groups.len() > 8 {
+                notes.push(format!(
+                    "{} more group(s)",
+                    blocker.evidence_groups.len() - 8
+                ));
+            }
+            if blocker.evidence_groups_truncated {
+                notes.push(format!(
+                    "only the largest {} groups are listed",
+                    blocker.evidence_groups.len()
+                ));
+            }
+            if blocker.evidence_total > blocker.evidence.len() {
+                notes.push(format!(
+                    "showing {} of {} evidence entries",
+                    blocker.evidence.len(),
+                    blocker.evidence_total
+                ));
+            }
+            if !notes.is_empty() {
+                println!("    {}; full details in --json", notes.join("; "));
+            }
+        } else {
+            for evidence in blocker.evidence.iter().take(6) {
+                println!("    - {evidence}");
+            }
         }
     }
     println!();
