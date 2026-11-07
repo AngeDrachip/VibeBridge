@@ -30,7 +30,7 @@ and documented.
 - [x] CI workflow for Linux + Windows with JDK 17, fmt, clippy, and tests.
 - [x] Documentation, compatibility matrix, and license.
 
-## 0.2 - Better diagnosis before execution
+## 0.2.0 - Better diagnosis before execution (done)
 
 Goal: make a `blocked` result more actionable, and make a `runnable-subset`
 result easier to trust.

@@ -6,6 +6,8 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-07
+
 ### Added
 
 - `vibe horizon validate <hmod>`: read-only checks of a content bundle's

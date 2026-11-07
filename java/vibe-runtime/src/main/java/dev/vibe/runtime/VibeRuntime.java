@@ -28,7 +28,7 @@ public final class VibeRuntime {
     /** Must match {@code vibe_bridge::protocol::PROTOCOL_VERSION}. */
     public static final int PROTOCOL_VERSION = 1;
     public static final String RUNTIME_NAME = "vibe-runtime";
-    public static final String RUNTIME_VERSION = "0.1.0";
+    public static final String RUNTIME_VERSION = "0.2.0";
 
     /**
      * The Forge API names Vibe implements. Kept in sync with

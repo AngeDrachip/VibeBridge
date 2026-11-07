@@ -16,7 +16,7 @@ modifying them, decides honestly whether it can execute their entrypoints,
 runs the supported lifecycle in a real JVM, and can carry data-only content into
 Horizon through Horizon's documented content-mod format.
 
-Current release: **0.1.0** (proof of concept).
+Current release: **0.2.0** (better diagnosis before execution).
 
 ## What Vibe does
 

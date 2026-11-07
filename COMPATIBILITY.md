@@ -1,6 +1,6 @@
 # Compatibility
 
-This document describes exactly what Vibe 0.1.0 implements and what it does not.
+This document describes exactly what Vibe 0.2.0 implements and what it does not.
 It is deliberately narrower than "Forge compatibility". A `runnable-subset`
 verdict means Vibe found no hard blocker and can construct the mod's entrypoint
 against the API listed here; it does not mean the mod will behave like it does
