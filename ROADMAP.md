@@ -35,7 +35,7 @@ and documented.
 Goal: make a `blocked` result more actionable, and make a `runnable-subset`
 result easier to trust.
 
-- [ ] Resolve more of the mod's own class dependencies during inspection and
+- [x] Resolve more of the mod's own class dependencies during inspection and
       report missing third-party libraries as their own blocker instead of
       discovering them only at construction time.
 - [ ] Parse and report `mods.toml` dependency ranges more thoroughly, including

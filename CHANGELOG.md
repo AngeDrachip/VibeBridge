@@ -14,6 +14,10 @@ All notable changes to Vibe are documented here. The format follows
 - `vibe horizon install <hmod> --game-dir <dir>`: validate a bundle and copy it
   into Horizon's `horizon-mods/` folder, with `--dry-run` and `--force`.
 - SHA-256 of every validated or installed bundle.
+- Inspection now compares every class the jar references with the classes it
+  ships and the JDK/platform/Vibe shims, and reports missing third-party
+  libraries as an `ExternalClasses` blocker with the classes and library groups
+  in `--json`.
 
 ### Changed
 

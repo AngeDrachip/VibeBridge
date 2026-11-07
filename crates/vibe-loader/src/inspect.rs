@@ -108,6 +108,7 @@ pub fn inspect_jar(path: &Path, runtime_java_release: Option<u16>) -> Result<Jar
     let mut mods_toml = None;
     let mut mcmod_info = None;
     let mut classes = Vec::new();
+    let mut provided_classes = BTreeSet::new();
     let mut class_errors = Vec::new();
     let mut nested_jars = BTreeSet::new();
     let mut service_files = BTreeSet::new();
@@ -154,6 +155,9 @@ pub fn inspect_jar(path: &Path, runtime_java_release: Option<u16>) -> Result<Jar
         if lower.ends_with(".class") {
             if is_ignored_class(&name) {
                 continue;
+            }
+            if let Some(stem) = name.strip_suffix(".class") {
+                provided_classes.insert(stem.replace('/', "."));
             }
             let bytes = read_limited(&mut entry, MAX_CLASS_BYTES)?;
             match parse_class(&bytes) {
@@ -255,6 +259,7 @@ pub fn inspect_jar(path: &Path, runtime_java_release: Option<u16>) -> Result<Jar
             Some(metadata.loader.clone())
         },
         classes: classes.clone(),
+        provided_classes,
         class_errors,
         nested_jars: nested_jars.iter().cloned().collect(),
         mixin_configs: mixin_configs.iter().cloned().collect(),

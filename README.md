@@ -22,8 +22,8 @@ Current release: **0.1.0** (proof of concept).
 
 - **Discovers and inspects** Forge jars and directories read-only. It parses
   `mods.toml` / `mcmod.info`, class files, annotations, referenced Minecraft and
-  Forge classes, Mixin configs, access transformers, core plugins, and nested
-  jars.
+  Forge classes, third-party library references, Mixin configs, access
+  transformers, core plugins, and nested jars.
 - **Classifies** each jar as `runnable-subset`, `content-only`, `blocked`, or
   `unknown`, with evidence for every blocker.
 - **Plans a load** with duplicate detection, dependency ordering, missing

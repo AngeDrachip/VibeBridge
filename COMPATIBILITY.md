@@ -6,7 +6,7 @@ verdict means Vibe found no hard blocker and can construct the mod's entrypoint
 against the API listed here; it does not mean the mod will behave like it does
 in Minecraft.
 
-Last updated: 2026-11-06.
+Last updated: 2026-11-07.
 
 ## Verdicts
 
@@ -163,6 +163,7 @@ posted.
 | `MixinTransformer` | error | Declares Mixin configurations. |
 | `AccessTransformer` | error | Declares access transformers. |
 | `Coremod` | error | Declares an FML core plugin. |
+| `ExternalClasses` | error | References classes from a library the jar does not bundle, and Vibe does not provide. |
 | `MissingEntrypoint` | error | Java loader but no `@Mod` class. |
 | `UnsupportedLoader` | error | Unknown language loader. |
 | `JavaVersionTooNew` | error | Class file release is newer than the selected runtime. |
@@ -224,10 +225,12 @@ claimed as supported until a test for it is added and recorded here.
 - Mixin, coremods, access transformers, and nested jars are not executed.
 - The runtime has no Minecraft registries, `DeferredRegister`, capabilities,
   networking, commands, world access, or client rendering.
-- Third-party library references are not exhaustively analysed. Analysis
-  specifically classifies `net.minecraft.*` and `net.minecraftforge.*`; a mod
-  that depends on another absent library can still fail at class-load or
-  construction time, and the report will show that failure.
+- Third-party library references are analysed from the jar's constant pools and
+  compared with the classes the jar ships, the JDK/platform modules, Vibe's
+  Forge and log4j shims, and compile-time-only annotation packages. A reference
+  that remains is reported as `ExternalClasses`, with the classes and their
+  library groups. This is static evidence, not a runtime proof: a reference in
+  dead or reflective code can be reported even when it is never reached.
 - No sandbox: mod code runs with the host's OS permissions.
 - Pack formats are not upgraded during export.
 - The Java runtime is compiled with `--release 17`; newer class files are

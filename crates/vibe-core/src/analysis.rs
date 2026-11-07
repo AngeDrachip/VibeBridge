@@ -22,6 +22,7 @@ pub enum BlockerKind {
     Coremod,
     MixinTransformer,
     AccessTransformer,
+    ExternalClasses,
     NestedJars,
     NativeLibraries,
     MissingEntrypoint,
@@ -80,6 +81,12 @@ pub struct CompatibilityReport {
     pub declared_mod_ids: Vec<String>,
     pub referenced_minecraft_classes: Vec<String>,
     pub unsupported_forge_api: Vec<String>,
+    /// Classes referenced by the jar that neither the jar, the JDK, nor Vibe
+    /// provides. They are almost always a third-party library the mod expects
+    /// to find at runtime.
+    pub external_classes: Vec<String>,
+    /// External classes grouped by their first two package segments.
+    pub external_libraries: BTreeMap<String, usize>,
     pub class_count: usize,
     pub max_java_release: Option<u16>,
     pub has_assets: bool,
@@ -108,6 +115,8 @@ impl CompatibilityReport {
 pub struct AnalysisFacts {
     pub loader: Option<LoaderKind>,
     pub classes: Vec<ClassFileFacts>,
+    /// Every class name the jar ships, including classes that failed to parse.
+    pub provided_classes: BTreeSet<String>,
     pub class_errors: Vec<String>,
     pub nested_jars: Vec<String>,
     pub mixin_configs: Vec<String>,
@@ -218,6 +227,37 @@ pub fn analyze(facts: &AnalysisFacts) -> CompatibilityReport {
                 ),
             )
             .with_evidence(unsupported.clone()),
+        );
+    }
+
+    let mut provided: BTreeSet<&str> = facts.provided_classes.iter().map(String::as_str).collect();
+    provided.extend(facts.classes.iter().map(|class| class.name.as_str()));
+
+    let mut external = BTreeSet::new();
+    for class in &facts.classes {
+        for reference in &class.referenced_classes {
+            if is_external_class(reference, &provided) {
+                external.insert(reference.clone());
+            }
+        }
+    }
+    let external_libraries = library_counts(&external);
+    if !external.is_empty() {
+        let libraries: Vec<&str> = external_libraries.keys().map(String::as_str).collect();
+        blockers.push(
+            Blocker::new(
+                BlockerKind::ExternalClasses,
+                Severity::Error,
+                format!(
+                    "references {} class{} from {} librar{} the jar does not bundle and Vibe does not provide: {}",
+                    external.len(),
+                    if external.len() == 1 { "" } else { "es" },
+                    libraries.len(),
+                    if libraries.len() == 1 { "y" } else { "ies" },
+                    libraries.join(", ")
+                ),
+            )
+            .with_evidence(external.iter().cloned()),
         );
     }
 
@@ -357,11 +397,77 @@ pub fn analyze(facts: &AnalysisFacts) -> CompatibilityReport {
         declared_mod_ids: dedup(declared_mod_ids),
         referenced_minecraft_classes: referenced_minecraft.into_iter().collect(),
         unsupported_forge_api: unsupported,
+        external_classes: external.into_iter().collect(),
+        external_libraries,
         class_count: facts.classes.len(),
         max_java_release,
         has_assets: facts.has_assets,
         has_data: facts.has_data,
     }
+}
+
+/// Whether a referenced class must come from a library the jar does not ship.
+///
+/// The JDK, the Java platform modules, Vibe's Forge shim, log4j shim, and
+/// compile-time-only annotation processors are never external. Minecraft and
+/// unsupported Forge classes have their own, more specific blockers.
+fn is_external_class(class: &str, provided: &BTreeSet<&str>) -> bool {
+    if class.is_empty() || class.starts_with('[') || provided.contains(class) {
+        return false;
+    }
+    // `net.minecraftforge.` is checked first: it also starts with `net.minecraft.`.
+    if class.starts_with("net.minecraftforge.") {
+        return false;
+    }
+    if class.starts_with("net.minecraft.") {
+        return false;
+    }
+    const PROVIDED_PREFIXES: &[&str] = &[
+        "java.",
+        "javax.",
+        "jdk.",
+        "sun.",
+        "com.sun.",
+        "org.w3c.",
+        "org.xml.",
+        "org.ietf.",
+        "org.apache.logging.log4j.",
+    ];
+    if PROVIDED_PREFIXES
+        .iter()
+        .any(|prefix| class.starts_with(prefix))
+    {
+        return false;
+    }
+    // Retention-policy annotations are compile-time metadata; their absence does
+    // not prevent a class from loading. Filtering them avoids reporting a
+    // missing library for an annotation the mod never calls.
+    const COMPILE_ONLY_PREFIXES: &[&str] = &[
+        "org.jetbrains.annotations.",
+        "org.intellij.lang.annotations.",
+        "org.checkerframework.",
+        "com.google.errorprone.annotations.",
+        "edu.umd.cs.findbugs.annotations.",
+        "javax.annotation.",
+        "jakarta.annotation.",
+        "lombok.",
+    ];
+    !COMPILE_ONLY_PREFIXES
+        .iter()
+        .any(|prefix| class.starts_with(prefix))
+}
+
+fn library_counts(classes: &BTreeSet<String>) -> BTreeMap<String, usize> {
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
+    for class in classes {
+        let mut parts = class.split('.');
+        let library = match (parts.next(), parts.next()) {
+            (Some(first), Some(second)) => format!("{first}.{second}"),
+            _ => class.clone(),
+        };
+        *counts.entry(library).or_default() += 1;
+    }
+    counts
 }
 
 fn blocker_rank(kind: &BlockerKind) -> u8 {
@@ -370,14 +476,15 @@ fn blocker_rank(kind: &BlockerKind) -> u8 {
         BlockerKind::Coremod => 1,
         BlockerKind::MixinTransformer => 2,
         BlockerKind::AccessTransformer => 3,
-        BlockerKind::UnsupportedLoader => 4,
-        BlockerKind::MissingEntrypoint => 5,
-        BlockerKind::JavaVersionTooNew | BlockerKind::JavaVersionTooOld => 6,
-        BlockerKind::UnsupportedForgeApi => 7,
-        BlockerKind::NestedJars => 8,
-        BlockerKind::NativeLibraries => 9,
-        BlockerKind::ClassLoadError => 10,
-        BlockerKind::NoForgeMetadata => 11,
+        BlockerKind::ExternalClasses => 4,
+        BlockerKind::UnsupportedLoader => 5,
+        BlockerKind::MissingEntrypoint => 6,
+        BlockerKind::JavaVersionTooNew | BlockerKind::JavaVersionTooOld => 7,
+        BlockerKind::UnsupportedForgeApi => 8,
+        BlockerKind::NestedJars => 9,
+        BlockerKind::NativeLibraries => 10,
+        BlockerKind::ClassLoadError => 11,
+        BlockerKind::NoForgeMetadata => 12,
     }
 }
 
@@ -475,5 +582,47 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(analyze(&facts).verdict, Verdict::ContentOnly);
+    }
+
+    #[test]
+    fn missing_third_party_library_blocks_a_mod() {
+        let mut entry = class("com.example.ExampleMod", Some("examplemod"));
+        entry
+            .referenced_classes
+            .insert("com.google.gson.Gson".into());
+        entry.referenced_classes.insert("java.util.List".into());
+        entry
+            .referenced_classes
+            .insert("org.jetbrains.annotations.Nullable".into());
+        let facts = AnalysisFacts {
+            loader: Some(LoaderKind::JavaFml),
+            classes: vec![entry],
+            runtime_java_release: Some(17),
+            ..Default::default()
+        };
+        let report = analyze(&facts);
+        assert_eq!(report.verdict, Verdict::Blocked);
+        assert_eq!(report.external_classes, vec!["com.google.gson.Gson"]);
+        assert_eq!(report.external_libraries.get("com.google"), Some(&1));
+        assert!(report
+            .blockers
+            .iter()
+            .any(|blocker| blocker.kind == BlockerKind::ExternalClasses));
+    }
+
+    #[test]
+    fn classes_shipped_with_the_mod_are_not_external() {
+        let mut entry = class("com.example.ExampleMod", Some("examplemod"));
+        entry.referenced_classes.insert("com.example.Helper".into());
+        let mut facts = AnalysisFacts {
+            loader: Some(LoaderKind::JavaFml),
+            classes: vec![entry],
+            runtime_java_release: Some(17),
+            ..Default::default()
+        };
+        facts.provided_classes.insert("com.example.Helper".into());
+        let report = analyze(&facts);
+        assert_eq!(report.verdict, Verdict::RunnableSubset);
+        assert!(report.external_classes.is_empty());
     }
 }
