@@ -194,6 +194,15 @@ It does not carry:
 Unclaimed mod namespaces are excluded and reported. Horizon's documented limits
 are enforced: 65,536 files, 16 MiB per file, 512 MiB total.
 
+The `--json` report explains each included file (path, kind, byte size) and up
+to 512 skipped files with a reason (`unclaimed_namespace`, `unsafe_path`, or
+`not_content`). Counts stay complete when the per-file skip list is truncated.
+When the jar has a root `pack.mcmeta`, its declared `pack_format` and
+`supported_formats` are reported; they are metadata, not carried into the
+bundle, and Vibe does not upgrade pack formats. The same is true of a declared
+Minecraft dependency range: it is reported, not turned into a Horizon version
+check.
+
 ## Tested behavior
 
 The automated suite compiles and runs two fixtures against the real shim:

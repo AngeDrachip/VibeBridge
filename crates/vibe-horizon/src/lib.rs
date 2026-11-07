@@ -34,6 +34,10 @@ const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_TOTAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_FILES: usize = 65_536;
 const MAX_METADATA_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_PACK_META_BYTES: u64 = 1024 * 1024;
+/// Enough detail for a user to understand a large jar without turning one
+/// export report into tens of thousands of lines.
+const MAX_SKIPPED_DETAILS: usize = 512;
 const MANIFEST_NAME: &str = "horizon-mod.toml";
 /// Every key Horizon's content-mod manifest documents. Unknown keys are refused
 /// by Horizon, so validation reports them too.
@@ -263,9 +267,49 @@ pub struct ContentExport {
     /// Non-content entries (classes, META-INF, other resources) ignored.
     pub ignored_entries: usize,
     pub file_counts: BTreeMap<String, usize>,
+    /// Every file written into the bundle, with its kind and size.
+    pub entries: Vec<ExportEntry>,
+    /// Up to 512 entries that were not carried, with why. Counts above are
+    /// complete even when this list is truncated.
+    #[serde(default)]
+    pub skipped: Vec<SkippedEntry>,
+    #[serde(default)]
+    pub skipped_truncated: bool,
+    /// `pack.mcmeta` declarations found at the jar root, copied or not.
+    #[serde(default)]
+    pub source_pack_formats: Vec<SourcePackFormat>,
+    /// The mod's declared `minecraft` dependency range, when it has one.
+    #[serde(default)]
+    pub minecraft_version_range: Option<String>,
     pub manifest: String,
     pub warnings: Vec<String>,
     pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportEntry {
+    pub path: String,
+    pub kind: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SkippedEntry {
+    pub path: String,
+    /// Why the file was not carried: `unclaimed_namespace`, `unsafe_path`, or
+    /// `not_content`.
+    pub reason: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourcePackFormat {
+    pub path: String,
+    #[serde(default)]
+    pub pack_format: Option<i64>,
+    #[serde(default)]
+    pub supported_formats: Option<serde_json::Value>,
 }
 
 /// The result of checking an existing `.hmod` bundle against the documented
@@ -922,9 +966,13 @@ pub fn export_content(
     let mut excluded_files = 0usize;
     let mut ignored_entries = 0usize;
     let mut total_bytes = 0u64;
+    let mut warnings: Vec<String> = Vec::new();
+    let mut skipped: Vec<SkippedEntry> = Vec::new();
+    let mut skipped_truncated = false;
+    let mut source_pack_formats: Vec<SourcePackFormat> = Vec::new();
 
     for index in 0..archive.len() {
-        let entry = archive
+        let mut entry = archive
             .by_index(index)
             .map_err(|error| VibeError::Archive(format!("{}: {error}", jar.display())))?;
         if entry.is_dir() {
@@ -932,10 +980,57 @@ pub fn export_content(
         }
         let raw_name = entry.name().to_string();
         let name = raw_name.replace('\\', "/");
+        if name == "pack.mcmeta" {
+            ignored_entries += 1;
+            if entry.size() > MAX_PACK_META_BYTES {
+                warnings.push(format!(
+                    "pack.mcmeta is larger than {MAX_PACK_META_BYTES} bytes; its pack format was not read"
+                ));
+            } else {
+                let mut text = String::new();
+                match entry.read_to_string(&mut text) {
+                    Ok(_) => match serde_json::from_str::<serde_json::Value>(&text) {
+                        Ok(value) => {
+                            let pack = value.get("pack");
+                            source_pack_formats.push(SourcePackFormat {
+                                path: name.clone(),
+                                pack_format: pack
+                                    .and_then(|pack| pack.get("pack_format"))
+                                    .and_then(serde_json::Value::as_i64),
+                                supported_formats: pack
+                                    .and_then(|pack| pack.get("supported_formats"))
+                                    .cloned(),
+                            });
+                        }
+                        Err(error) => {
+                            warnings.push(format!("pack.mcmeta is not valid JSON: {error}"));
+                        }
+                    },
+                    Err(error) => {
+                        warnings.push(format!("pack.mcmeta could not be read as text: {error}"));
+                    }
+                }
+            }
+            record_skip(
+                &mut skipped,
+                &mut skipped_truncated,
+                &name,
+                "not_content",
+                Some("pack metadata is not carried by a content mod".to_string()),
+            );
+            continue;
+        }
         match classify_entry(&name, &namespaces, options) {
             Some(kind) => {
                 if !valid_entry_path(&name) {
                     excluded_files += 1;
+                    record_skip(
+                        &mut skipped,
+                        &mut skipped_truncated,
+                        &name,
+                        "unsafe_path",
+                        Some("not a safe, lowercase resource path".to_string()),
+                    );
                     continue;
                 }
                 let size = entry.size();
@@ -954,10 +1049,24 @@ pub fn export_content(
             }
             None => {
                 if let Some(namespace) = outside_namespace(&name, &namespaces) {
-                    outside_namespaces.insert(namespace);
+                    outside_namespaces.insert(namespace.clone());
                     excluded_files += 1;
+                    record_skip(
+                        &mut skipped,
+                        &mut skipped_truncated,
+                        &name,
+                        "unclaimed_namespace",
+                        Some(namespace),
+                    );
                 } else {
                     ignored_entries += 1;
+                    record_skip(
+                        &mut skipped,
+                        &mut skipped_truncated,
+                        &name,
+                        "not_content",
+                        None,
+                    );
                 }
             }
         }
@@ -1044,7 +1153,6 @@ pub fn export_content(
     }
     std::fs::rename(&temp, output)?;
 
-    let mut warnings = Vec::new();
     let mut notes = Vec::new();
     if !outside_namespaces.is_empty() {
         warnings.push(format!(
@@ -1085,6 +1193,42 @@ pub fn export_content(
         );
     }
 
+    let minecraft_version_range = inspection
+        .metadata
+        .dependencies
+        .values()
+        .flat_map(|deps| deps.iter())
+        .find(|dep| dep.mod_id == "minecraft" && !dep.version_range.trim().is_empty())
+        .map(|dep| dep.version_range.clone());
+    if let Some(range) = &minecraft_version_range {
+        notes.push(format!(
+            "The jar declares a Minecraft dependency range {range}; Vibe reports it but does not translate it into a Horizon version check."
+        ));
+    }
+    if !source_pack_formats.is_empty() {
+        let formats: Vec<String> = source_pack_formats
+            .iter()
+            .map(|format| match format.pack_format {
+                Some(value) => format!("{}: pack_format {value}", format.path),
+                None => format!("{}: no pack_format", format.path),
+            })
+            .collect();
+        notes.push(format!(
+            "pack.mcmeta declares {}; Horizon content mods are read as 26.3 content, Vibe copies resource bytes unchanged, and pack.mcmeta itself is not part of a content mod.",
+            formats.join(", ")
+        ));
+    }
+
+    let mut entries: Vec<ExportEntry> = selected
+        .iter()
+        .map(|(path, kind, bytes)| ExportEntry {
+            path: path.clone(),
+            kind: kind.label().to_string(),
+            bytes: *bytes,
+        })
+        .collect();
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+
     Ok(ContentExport {
         source: jar.to_path_buf(),
         source_sha256: inspection.sha256.clone(),
@@ -1100,10 +1244,33 @@ pub fn export_content(
         excluded_files,
         ignored_entries,
         file_counts,
+        entries,
+        skipped,
+        skipped_truncated,
+        source_pack_formats,
+        minecraft_version_range,
         manifest,
         warnings,
         notes,
     })
+}
+
+fn record_skip(
+    skipped: &mut Vec<SkippedEntry>,
+    truncated: &mut bool,
+    path: &str,
+    reason: &str,
+    detail: Option<String>,
+) {
+    if skipped.len() >= MAX_SKIPPED_DETAILS {
+        *truncated = true;
+        return;
+    }
+    skipped.push(SkippedEntry {
+        path: path.to_string(),
+        reason: reason.to_string(),
+        detail,
+    });
 }
 
 fn classify_entry(
@@ -1447,6 +1614,89 @@ authors = "Ada, Grace"
         fixture_jar(&jar);
         let error = export_jar(&jar, &temp.path().join("x.hmod"), &options).unwrap_err();
         assert!(error.to_string().contains("reserved"));
+    }
+
+    #[test]
+    fn explains_entries_skips_and_pack_format() {
+        let temp = tempfile::tempdir().unwrap();
+        let jar = temp.path().join("explained.jar");
+        let output = temp.path().join("explained.hmod");
+        let metadata = r#"
+modLoader = "javafml"
+loaderVersion = "[47,)"
+license = "MIT"
+
+[[mods]]
+modId = "examplemod"
+version = "1.2.3"
+displayName = "Example Mod"
+
+[[dependencies.examplemod]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.21,1.22)"
+ordering = "NONE"
+side = "BOTH"
+"#;
+        write_zip(
+            &jar,
+            &[
+                ("META-INF/mods.toml", metadata.as_bytes()),
+                (
+                    "pack.mcmeta",
+                    br#"{"pack":{"pack_format":34,"supported_formats":[34,45]}}"#,
+                ),
+                ("assets/examplemod/lang/en_us.json", b"{}"),
+                ("assets/othermod/lang/en_us.json", b"{}"),
+                (
+                    "data/examplemod/horizon/block/ruby_block.json",
+                    br#"{"template": "minecraft:iron_block"}"#,
+                ),
+                ("example/ExampleMod.class", b"not a class"),
+                ("docs/readme.txt", b"notes"),
+            ],
+        );
+
+        let exported = export_jar(&jar, &output, &ExportOptions::default()).unwrap();
+        assert_eq!(exported.files, 2);
+        assert_eq!(exported.entries.len(), 2);
+        assert!(exported.entries.iter().any(|entry| entry.path
+            == "assets/examplemod/lang/en_us.json"
+            && entry.kind == "assets"));
+        assert!(exported.entries.iter().any(|entry| entry.path
+            == "data/examplemod/horizon/block/ruby_block.json"
+            && entry.kind == "data"));
+
+        let skipped = |path: &str| {
+            exported
+                .skipped
+                .iter()
+                .find(|entry| entry.path == path)
+                .unwrap_or_else(|| panic!("{path} was not explained: {:?}", exported.skipped))
+        };
+        assert_eq!(
+            skipped("assets/othermod/lang/en_us.json").reason,
+            "unclaimed_namespace"
+        );
+        assert_eq!(
+            skipped("assets/othermod/lang/en_us.json").detail.as_deref(),
+            Some("othermod")
+        );
+        assert_eq!(skipped("example/ExampleMod.class").reason, "not_content");
+        assert_eq!(skipped("docs/readme.txt").reason, "not_content");
+        assert_eq!(skipped("pack.mcmeta").reason, "not_content");
+        assert!(!exported.skipped_truncated);
+
+        assert_eq!(exported.source_pack_formats.len(), 1);
+        assert_eq!(exported.source_pack_formats[0].pack_format, Some(34));
+        assert_eq!(
+            exported.minecraft_version_range.as_deref(),
+            Some("[1.21,1.22)")
+        );
+        assert!(exported
+            .notes
+            .iter()
+            .any(|note| note.contains("pack.mcmeta")));
     }
 
     #[test]

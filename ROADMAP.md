@@ -40,9 +40,9 @@ result easier to trust.
       discovering them only at construction time.
 - [ ] Parse and report `mods.toml` dependency ranges more thoroughly, including
       side-specific dependencies.
-- [ ] Report pack-format/version hints during content export so users can see
+- [x] Report pack-format/version hints during content export so users can see
       when resources target a different Minecraft era.
-- [ ] Add per-entry export explanations in `--json` (why each file was included
+- [x] Add per-entry export explanations in `--json` (why each file was included
       or skipped).
 - [ ] Improve `inspect` evidence grouping for large jars.
 - [ ] Add fixtures for blocked cases: Minecraft reference, Mixin, access

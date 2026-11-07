@@ -792,6 +792,27 @@ fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {
                 exported.outside_namespaces.join(", ")
             );
         }
+        let mut skipped_reasons: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for entry in &exported.skipped {
+            *skipped_reasons.entry(entry.reason.as_str()).or_default() += 1;
+        }
+        if !skipped_reasons.is_empty() {
+            let summary: Vec<String> = skipped_reasons
+                .iter()
+                .map(|(reason, count)| format!("{reason} {count}"))
+                .collect();
+            println!(
+                "  explained skips: {}{}",
+                summary.join(", "),
+                if exported.skipped_truncated {
+                    " (list truncated; counts above are complete)"
+                } else {
+                    ""
+                }
+            );
+            println!("  per-file reasons: see --json");
+        }
         if !exported.warnings.is_empty() {
             println!("Warnings:");
             for warning in &exported.warnings {

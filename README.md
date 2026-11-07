@@ -195,6 +195,11 @@ claimed namespaces. Export:
 - validates the generated manifest and id before moving the finished bundle
   into place;
 - reports namespaces it left out and files left outside claimed namespaces;
+- records every included file with its kind and size, and up to 512 skipped
+  files with a reason (`unclaimed_namespace`, `unsafe_path`, `not_content`) in
+  `--json`;
+- reports `pack.mcmeta` pack formats and the jar's declared Minecraft
+  dependency range, without translating or upgrading either;
 - never upgrades old Minecraft pack formats.
 
 The original jar is not changed. The export result includes its SHA-256 so the
