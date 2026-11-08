@@ -16,7 +16,7 @@ modifying them, decides honestly whether it can execute their entrypoints,
 runs the supported lifecycle in a real JVM, and can carry data-only content into
 Horizon through Horizon's documented content-mod format.
 
-Current release: **0.4.0** (functional registry subset, nested JARs, multi-version profiles, setup/logging/benchmark tooling).
+Current release: **1.0.0-beta.1** (Horizon integration, functional registry subset, nested JARs, multi-version profiles, setup/logging/benchmark tooling).
 
 ## What Vibe does
 
@@ -76,8 +76,9 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the exact implemented surface and
 
 - Rust 1.85 or newer (edition 2021).
 - A JDK 17 or newer. Vibe compiles and runs its Java sidecar with `--release 17`.
-- Optional: a Horizon installation with `horizon-ctl` for `vibe horizon probe`.
-  Export works without a running game.
+- Optional: a Horizon installation with `horizon-ctl` for `vibe horizon probe`
+  and `vibe horizon connect`. Export works without a running game; `vibe horizon
+  connect` needs one to answer with ready state.
 
 On Windows, make sure `JAVA_HOME` points at JDK 17+ before building. A Java 8
 `javac` earlier on `PATH` is rejected.
@@ -172,6 +173,7 @@ Every command accepts `--json` for machine-readable output.
 | `vibe bench` | Measure JVM startup, mod load, lifecycle, and total time over repeated runs. | `0` all runs ok, `3` nothing runnable, `4` runtime failure, `5` profile conflict |
 | `vibe compat` | Show the embedded compatibility database and the evidence behind each status. | `0` success |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
+| `vibe horizon connect` | Connect to a running Horizon instance and verify it. | `0` ready, `1` not ready |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
 | `vibe horizon install <hmod>` | Copy a validated bundle into `<game-dir>/horizon-mods/`. | `0` success, `1` error |
