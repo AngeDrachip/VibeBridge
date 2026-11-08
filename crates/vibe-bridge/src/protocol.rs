@@ -62,6 +62,15 @@ pub struct Hello {
     pub pid: u64,
     #[serde(default)]
     pub supported_forge_api: Vec<String>,
+    /// Compatibility profile ids this runtime can execute.
+    #[serde(default)]
+    pub supported_profiles: Vec<String>,
+    /// The profile this process was started with, if any.
+    #[serde(default)]
+    pub active_profile: Option<String>,
+    /// The API backend serving `active_profile`, if any.
+    #[serde(default)]
+    pub backend: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

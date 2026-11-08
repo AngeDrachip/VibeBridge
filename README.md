@@ -16,7 +16,7 @@ modifying them, decides honestly whether it can execute their entrypoints,
 runs the supported lifecycle in a real JVM, and can carry data-only content into
 Horizon through Horizon's documented content-mod format.
 
-Current release: **0.2.0** (better diagnosis before execution).
+Current release: **0.3.0** (independent Minecraft/Forge compatibility profiles).
 
 ## What Vibe does
 
@@ -29,6 +29,10 @@ Current release: **0.2.0** (better diagnosis before execution).
 - **Plans a load** with duplicate detection, dependency ordering, missing
   dependency reporting, declared version ranges and mismatches, namespace
   conflict detection, cycle detection, and optional side-aware filtering.
+- **Matches each mod to a compatibility profile** from the Minecraft and Forge
+  versions it declares. Vibe's own release version is independent from those
+  targets. A run uses exactly one profile, like a Proton prefix; mixed or
+  undeclared targets are reported instead of guessed.
 - **Runs the supported subset** in a real JVM: isolated class loaders,
   `@Mod` construction, Forge-shaped event buses, legacy `@Mod.EventHandler`
   callbacks, modern `@SubscribeEvent` listeners, sided setup filtering, and a
@@ -97,14 +101,23 @@ target\release\vibe.exe doctor
 # Inspect without executing any mod code.
 target\release\vibe.exe inspect java\test-mods\build
 
+# List the Minecraft/Forge compatibility profiles in this build.
+target\release\vibe.exe profiles
+
 # Build a dependency-ordered plan.
 target\release\vibe.exe plan java\test-mods\build
 
 # Plan a server only: client-only mods and dependencies are not required.
 target\release\vibe.exe plan java\test-mods\build --side SERVER
 
+# Require one profile and fail (exit 5) if a mod declares another target.
+target\release\vibe.exe plan java\test-mods\build --profile forge-1.21.1-52
+
 # Run the fixtures in the Java sidecar and print the lifecycle report.
 target\release\vibe.exe run java\test-mods\build
+
+# Run one explicit profile.
+target\release\vibe.exe run java\test-mods\build --profile forge-1.21.1-52
 
 # Export only the fixture's assets/data as a Horizon content mod.
 target\release\vibe.exe horizon export java\test-mods\build\hello-forge.jar `
@@ -139,8 +152,9 @@ Every command accepts `--json` for machine-readable output.
 | --- | --- | --- |
 | `vibe doctor` | Check Java 17+, the Vibe runtime, and `horizon-ctl` availability. | `0` healthy, `1` not healthy |
 | `vibe inspect <paths...>` | Read-only analysis of jars and directories. | `0` no inspection errors, `1` errors |
-| `vibe plan <paths...>` | Dependency/namespace plan without executing code; `--side CLIENT\|SERVER` plans one side. | `0` no inspection errors, `1` errors |
-| `vibe run <paths...>` | Start the JVM sidecar, load runnable jars, run the lifecycle. | `0` lifecycle ok, `3` nothing runnable, `4` runtime failure |
+| `vibe plan <paths...>` | Dependency/namespace plan without executing code; `--side CLIENT\|SERVER` plans one side; `--profile <id>` requires one target. | `0` no inspection errors, `1` errors, `5` requested profile not satisfied |
+| `vibe run <paths...>` | Start the JVM sidecar, load runnable jars under one profile, run the lifecycle. | `0` lifecycle ok, `3` nothing runnable, `4` runtime failure, `5` profile conflict or no runtime backend |
+| `vibe profiles` | List the embedded Minecraft/Forge compatibility profiles. `--runtime-only` hides metadata-only targets. | `0` success |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
@@ -149,6 +163,9 @@ Every command accepts `--json` for machine-readable output.
 Useful `run` options:
 
 - `--side SERVER|CLIENT` selects the lifecycle side (default `SERVER`).
+- `--profile <id>` requires one compatibility profile. Vibe fails with exit `5`
+  instead of starting a JVM when a runnable mod declares another target or when
+  the profile is metadata-only.
 - `--java <file-or-home>` selects a JDK/JRE.
 - `--runtime <jar-or-classes>` selects the Vibe Java runtime.
 - `--heap-mb <n>` sets the JVM maximum heap (default 2048).
@@ -162,6 +179,8 @@ Useful `plan` options:
   for the other side as excluded, and ignores dependencies that only apply to
   the other side. Without `--side`, every scanned mod is planned. A mod with no
   declared side is kept on both sides.
+- `--profile <id>` requires every planned mod to match that profile. Without it,
+  Vibe reports mods that resolve to different profiles as a conflict.
 
 Useful export options:
 
@@ -172,6 +191,44 @@ Useful export options:
 - `--force` replaces an existing output file.
 - `--no-vanilla-tags`, `--no-convention-tags`, `--no-atlases` exclude the
   corresponding optional content groups.
+
+## Compatibility profiles
+
+Vibe's release version is independent from Minecraft, Forge, and Horizon
+versions. Each profile fixes one Minecraft version, one Forge loader family, a
+Java level, and the Vibe backend that serves it. The matrix is embedded in the
+binary from `crates/vibe-core/data/profiles.toml`.
+
+| Profile | Minecraft | Forge | Java | Status |
+| --- | --- | --- | --- | --- |
+| `forge-1.20.1-47` | 1.20.1 | 47.x | 17 | `experimental-subset` |
+| `forge-1.21.1-52` | 1.21.1 | 52.x | 21 | `experimental-subset` |
+| `forge-26.3-66` | 26.3 | 66.x | 21 | `metadata-only` |
+
+`experimental-subset` means Vibe has a tested clean-room Forge API subset for
+that loader family; it does not mean Minecraft gameplay works.
+`metadata-only` means Vibe can detect, plan, inspect, and export assets/data for
+that target but has no runtime backend.
+
+Selection rules:
+
+- A modern mod declares its target through a `minecraft` dependency and
+  `loaderVersion` in `mods.toml`; a legacy mod uses `mcmod.info`
+  (`acceptedMinecraftVersions` or `mcversion`).
+- Vibe resolves a profile only when exactly one profile matches both the
+  Minecraft range and the Forge loader range.
+- A missing declaration is reported as `undeclared`, never guessed. Pass
+  `--profile <id>` to choose explicitly.
+- An explicit profile is still checked against the mod's declarations; it does
+  not override a declared mismatch.
+- One JVM run uses one profile. Mods targeting different runtime profiles cause
+  exit `5` instead of being silently mixed.
+- A metadata-only profile is inspectable and exportable but `vibe run` refuses
+  it with exit `5`.
+
+`vibe inspect` reports each jar's resolution, `vibe plan` reports a plan-level
+profile and conflicts, and `vibe run` passes the active profile and backend to
+the Java sidecar. The sidecar rejects a profile or backend it does not provide.
 
 ## Compatibility verdicts
 
@@ -235,7 +292,7 @@ without writing, and `--force` to replace a file with the same name.
 
 ```text
 crates/
-  vibe-core/      domain types, metadata, class parser, version ranges, analysis
+  vibe-core/      domain types, metadata, class parser, version ranges, profiles, analysis
   vibe-loader/    recursive discovery and read-only jar inspection
   vibe-registry/  mod registration, dependency order, namespace conflicts
   vibe-events/    typed host event bus and lifecycle state machine

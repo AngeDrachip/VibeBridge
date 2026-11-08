@@ -46,6 +46,8 @@ public final class ModManager {
     private final List<LoadedJar> jars = new ArrayList<>();
     private final VibeEventBus forgeBus = new VibeEventBus("forge");
     private String side = "SERVER";
+    private String profile;
+    private String backend;
     private String phase = "new";
     private final List<String> failures = new ArrayList<>();
 
@@ -54,8 +56,15 @@ public final class ModManager {
     }
 
     public synchronized Map<String, Object> load(List<Path> paths, String requestedSide) {
+        return load(paths, requestedSide, null, null);
+    }
+
+    public synchronized Map<String, Object> load(
+            List<Path> paths, String requestedSide, String requestedProfile, String requestedBackend) {
         reset();
         this.side = requestedSide == null ? "SERVER" : requestedSide.toUpperCase();
+        this.profile = requestedProfile;
+        this.backend = requestedBackend;
         this.phase = "loaded";
 
         for (Path path : paths) {
@@ -80,6 +89,8 @@ public final class ModManager {
         return Json.object(
                 "ok", failures.isEmpty(),
                 "side", side,
+                "profile", profile,
+                "backend", backend,
                 "jars", jarList,
                 "mods", modList,
                 "failures", new ArrayList<>(failures));
@@ -186,6 +197,8 @@ public final class ModManager {
         return Json.object(
                 "ok", true,
                 "side", side,
+                "profile", profile,
+                "backend", backend,
                 "phase", phase,
                 "mods", statusList(),
                 "failures", new ArrayList<>(failures));
@@ -199,6 +212,8 @@ public final class ModManager {
             namespaces.put(mod.id, List.of(mod.id));
         }
         return Json.object(
+                "profile", profile,
+                "backend", backend,
                 "mods", ids,
                 "namespaces", namespaces,
                 "event_records", allRecords());
@@ -467,6 +482,8 @@ public final class ModManager {
         jars.clear();
         failures.clear();
         phase = "new";
+        profile = null;
+        backend = null;
     }
 
     private static Throwable unwrap(Throwable throwable) {

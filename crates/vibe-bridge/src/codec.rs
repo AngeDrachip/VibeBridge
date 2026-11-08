@@ -52,6 +52,9 @@ mod tests {
             arch: "test".into(),
             pid: 1,
             supported_forge_api: Vec::new(),
+            supported_profiles: Vec::new(),
+            active_profile: None,
+            backend: None,
         });
         write_message(&mut buffer, &message).unwrap();
         let mut reader = std::io::BufReader::new(buffer.as_slice());

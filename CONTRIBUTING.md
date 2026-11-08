@@ -61,10 +61,30 @@ Useful manual checks:
 
 ```powershell
 target\debug\vibe.exe doctor
+target\debug\vibe.exe profiles
 target\debug\vibe.exe inspect java\test-mods\build
-target\debug\vibe.exe run java\test-mods\build
+target\debug\vibe.exe run java\test-mods\build --profile forge-1.21.1-52
 target\debug\vibe.exe horizon export java\test-mods\build\hello-forge.jar --output dist\hello-forge.hmod --force
 ```
+
+## Adding a compatibility profile
+
+A profile is a version target, not a compatibility claim. Before adding one to
+`crates/vibe-core/data/profiles.toml`:
+
+1. Verify the exact Minecraft version and the Forge loader major that targets it.
+2. Declare a Minecraft range and a Forge loader range that do not overlap an
+   existing profile ambiguously.
+3. Set `status = "metadata-only"` unless a tested runtime backend exists.
+4. If the status is `experimental-subset`, name the backend and add a fixture
+   that the backend actually runs.
+5. Add the profile id to the Java runtime's `SUPPORTED_PROFILES` only when it has
+   a backend.
+6. Add resolution tests for the new target and update `README.md`,
+   `COMPATIBILITY.md`, and `CHANGELOG.md`.
+
+Never infer a profile from a mod's loader range alone, and never mark a profile
+supported because its metadata parses.
 
 ## Adding Forge API surface
 

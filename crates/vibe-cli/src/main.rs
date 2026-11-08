@@ -5,6 +5,7 @@
 //! analysis says Vibe's Forge API subset is sufficient; `horizon export`
 //! carries resources, never Java code.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::Duration;
@@ -17,12 +18,16 @@ use vibe_bridge::{
 };
 use vibe_core::error::{Result, VibeError};
 use vibe_core::metadata::ModSide;
+use vibe_core::profile::{ModRequirements, ProfileMatrix, ProfileResolution, ResolutionStatus};
 use vibe_core::Verdict;
 use vibe_horizon::{
     export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
 };
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
-use vibe_registry::plan_for_side;
+use vibe_registry::plan_for_side_with_profile;
+
+/// Exit code used when one run cannot settle on a single compatibility profile.
+const EXIT_PROFILE_CONFLICT: u8 = 5;
 
 #[derive(Parser)]
 #[command(
@@ -51,6 +56,8 @@ enum Command {
     Plan(PlanArgs),
     /// Load mods in the Java runtime and run the Forge lifecycle subset.
     Run(RunArgs),
+    /// List the embedded Minecraft/Forge compatibility profiles.
+    Profiles(ProfilesArgs),
     /// Work with a Horizon installation.
     Horizon(HorizonArgs),
 }
@@ -70,26 +77,32 @@ struct DoctorArgs {
 
 #[derive(Args)]
 struct InspectArgs {
-    /// Jars or directories containing jars.
-    #[arg(required = true)]
+    /// Jars or directories containing jars. Defaults to ./mods.
+    #[arg(default_value = "mods")]
     paths: Vec<PathBuf>,
+    /// Check every mod against this compatibility profile.
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 #[derive(Args)]
 struct PlanArgs {
-    /// Jars or directories containing jars.
-    #[arg(required = true)]
+    /// Jars or directories containing jars. Defaults to ./mods.
+    #[arg(default_value = "mods")]
     paths: Vec<PathBuf>,
     /// Plan for one side. Mods and dependencies declared for the other side
     /// are reported but not required.
     #[arg(long, value_parser = ["CLIENT", "SERVER", "client", "server"])]
     side: Option<String>,
+    /// Require every mod to match this compatibility profile.
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 #[derive(Args)]
 struct RunArgs {
-    /// Jars or directories containing jars.
-    #[arg(required = true)]
+    /// Jars or directories containing jars. Defaults to ./mods.
+    #[arg(default_value = "mods")]
     paths: Vec<PathBuf>,
     #[arg(long)]
     java: Option<PathBuf>,
@@ -99,6 +112,10 @@ struct RunArgs {
     /// Forge side passed to the runtime.
     #[arg(long, default_value = "SERVER", value_parser = ["SERVER", "CLIENT", "server", "client"])]
     side: String,
+    /// Run this compatibility profile. Without it, Vibe selects one only when
+    /// every runnable mod resolves to the same profile.
+    #[arg(long)]
+    profile: Option<String>,
     #[arg(long, default_value_t = 2048)]
     heap_mb: u32,
     #[arg(long, default_value_t = 30_000)]
@@ -107,6 +124,13 @@ struct RunArgs {
     /// blocked jars normally reference classes Vibe does not provide.
     #[arg(long)]
     include_blocked: bool,
+}
+
+#[derive(Args)]
+struct ProfilesArgs {
+    /// Show only profiles with a runtime backend.
+    #[arg(long)]
+    runtime_only: bool,
 }
 
 #[derive(Args)]
@@ -206,6 +230,7 @@ fn execute(cli: Cli) -> Result<u8> {
         Command::Inspect(args) => inspect(args, json),
         Command::Plan(args) => make_plan(args, json),
         Command::Run(args) => run(args, json),
+        Command::Profiles(args) => profiles(args, json),
         Command::Horizon(args) => match args.command {
             HorizonCommand::Probe(args) => horizon_probe(args, json),
             HorizonCommand::Export(args) => horizon_export(args, json),
@@ -322,6 +347,7 @@ fn doctor(args: DoctorArgs, json: bool) -> Result<u8> {
 // ---------------------------------------------------------------------------
 
 fn inspect(args: InspectArgs, json: bool) -> Result<u8> {
+    let matrix = ProfileMatrix::embedded()?;
     let discovery = discover_jars(&args.paths)?;
     let mut inspections = Vec::new();
     let mut errors = Vec::new();
@@ -335,9 +361,35 @@ fn inspect(args: InspectArgs, json: bool) -> Result<u8> {
         errors.push(json!({ "path": missing, "error": "path does not exist" }));
     }
 
+    let resolutions: Vec<ProfileResolution> = inspections
+        .iter()
+        .map(|inspection| {
+            matrix.resolve(
+                &ModRequirements::from_metadata(&inspection.metadata),
+                args.profile.as_deref(),
+            )
+        })
+        .collect();
+    let requested_unsatisfied = args.profile.is_some()
+        && resolutions
+            .iter()
+            .any(|resolution| !resolution.is_matched());
+
     if json {
+        let profiles: Vec<Value> = inspections
+            .iter()
+            .zip(&resolutions)
+            .map(|(inspection, resolution)| {
+                json!({
+                    "path": inspection.path,
+                    "resolution": resolution,
+                })
+            })
+            .collect();
         print_json(&json!({
             "jars": inspections,
+            "profiles": profiles,
+            "requested_profile": args.profile,
             "errors": errors,
             "skipped": discovery.skipped,
             "missing_paths": discovery.missing_paths,
@@ -346,8 +398,8 @@ fn inspect(args: InspectArgs, json: bool) -> Result<u8> {
         if inspections.is_empty() && errors.is_empty() {
             println!("No jars found.");
         }
-        for inspection in &inspections {
-            print_inspection(inspection);
+        for (inspection, resolution) in inspections.iter().zip(&resolutions) {
+            print_inspection(inspection, resolution);
         }
         for error in &errors {
             println!(
@@ -363,10 +415,16 @@ fn inspect(args: InspectArgs, json: bool) -> Result<u8> {
             println!("SKIP   {} (not a .jar)", skipped.display());
         }
     }
-    Ok(if errors.is_empty() { 0 } else { 1 })
+    Ok(if !errors.is_empty() {
+        1
+    } else if requested_unsatisfied {
+        EXIT_PROFILE_CONFLICT
+    } else {
+        0
+    })
 }
 
-fn print_inspection(inspection: &JarInspection) {
+fn print_inspection(inspection: &JarInspection, resolution: &ProfileResolution) {
     let ids = inspection.mod_ids();
     let ids = if ids.is_empty() {
         "<no declared id>".to_string()
@@ -391,6 +449,7 @@ fn print_inspection(inspection: &JarInspection) {
             .map(|m| m.side)
             .unwrap_or_default()
     );
+    print_profile_resolution(resolution);
     if !inspection.entrypoints.is_empty() {
         println!("  entrypoints: {}", inspection.entrypoints.join(", "));
     }
@@ -453,6 +512,48 @@ fn print_inspection(inspection: &JarInspection) {
     println!();
 }
 
+fn print_profile_resolution(resolution: &ProfileResolution) {
+    match (&resolution.selected, resolution.status) {
+        (Some(id), ResolutionStatus::Matched) => {
+            let detail = resolution
+                .candidates
+                .iter()
+                .find(|candidate| &candidate.id == id)
+                .map(|candidate| {
+                    format!(
+                        "Minecraft {} / Forge {} / {}",
+                        candidate.minecraft,
+                        candidate.forge_version,
+                        candidate.status.as_str()
+                    )
+                })
+                .unwrap_or_default();
+            if detail.is_empty() {
+                println!("  profile: {id} (matched)");
+            } else {
+                println!("  profile: {id} (matched; {detail})");
+            }
+        }
+        _ => {
+            println!("  profile: unresolved ({})", resolution.status.as_str());
+            for reason in &resolution.reasons {
+                println!("    {reason}");
+            }
+            if !resolution.candidates.is_empty() {
+                println!(
+                    "    considered: {}",
+                    resolution
+                        .candidates
+                        .iter()
+                        .map(|candidate| candidate.id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
+        }
+    }
+}
+
 fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
     let discovery = discover_jars(&args.paths)?;
     let mut inspections = Vec::new();
@@ -464,11 +565,19 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
         }
     }
     let side = args.side.as_deref().map(ModSide::parse);
-    let plan = plan_for_side(&inspections, side);
+    let plan = plan_for_side_with_profile(&inspections, side, args.profile.as_deref());
+    let requested_unsatisfied = args
+        .profile
+        .as_deref()
+        .map(|requested| {
+            plan.profile.as_deref() != Some(requested) || !plan.profile_conflicts.is_empty()
+        })
+        .unwrap_or(false);
 
     if json {
         print_json(&json!({
             "plan": plan,
+            "requested_profile": args.profile,
             "errors": errors,
             "missing_paths": discovery.missing_paths,
         }))?;
@@ -478,6 +587,13 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
             None => println!("Vibe load plan"),
         }
         println!("  mods: {}", plan.mods.len());
+        match &plan.profile {
+            Some(profile) => println!("  profile: {profile}"),
+            None => println!("  profile: unresolved"),
+        }
+        for conflict in &plan.profile_conflicts {
+            println!("  PROFILE {conflict}");
+        }
         for excluded in &plan.excluded_mods {
             println!("  EXCLUDED {}: {}", excluded.id, excluded.reason);
         }
@@ -550,7 +666,13 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
             );
         }
     }
-    Ok(if errors.is_empty() { 0 } else { 1 })
+    Ok(if !errors.is_empty() {
+        1
+    } else if requested_unsatisfied {
+        EXIT_PROFILE_CONFLICT
+    } else {
+        0
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -558,6 +680,49 @@ fn make_plan(args: PlanArgs, json: bool) -> Result<u8> {
 // ---------------------------------------------------------------------------
 
 fn run(args: RunArgs, json: bool) -> Result<u8> {
+    let matrix = ProfileMatrix::embedded()?;
+    let requested = args.profile.as_deref();
+
+    // An explicit profile must exist and have a runtime backend before any
+    // process is started. A metadata-only target can be inspected and
+    // exported, never executed.
+    if let Some(id) = requested {
+        let Some(profile) = matrix.get(id) else {
+            let report = json!({
+                "started": false,
+                "reason": format!(
+                    "unknown compatibility profile {id:?}; run `vibe profiles` to list supported ids"
+                ),
+                "requested_profile": id,
+            });
+            if json {
+                print_json(&report)?;
+            } else {
+                println!("Vibe did not start the runtime: unknown profile {id:?}.");
+                println!("Run `vibe profiles` to list the profiles this build supports.");
+            }
+            return Ok(EXIT_PROFILE_CONFLICT);
+        };
+        if !profile.allows_runtime() {
+            let reason = format!(
+                "profile {id} is {} with no runtime backend; Vibe can inspect and export these mods but cannot execute their Java code",
+                profile.status.as_str()
+            );
+            let report = json!({
+                "started": false,
+                "reason": reason,
+                "requested_profile": id,
+                "profile_status": profile.status,
+            });
+            if json {
+                print_json(&report)?;
+            } else {
+                println!("Vibe did not start the runtime: {reason}.");
+            }
+            return Ok(EXIT_PROFILE_CONFLICT);
+        }
+    }
+
     let discovery = discover_jars(&args.paths)?;
     let mut inspections = Vec::new();
     let mut skipped = Vec::new();
@@ -567,17 +732,25 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
             Err(error) => skipped.push(json!({
                 "path": jar,
                 "verdict": "error",
-                "reason": error.to_string(),
+                "reason": [error.to_string()],
             })),
         }
     }
+    for missing in &discovery.missing_paths {
+        skipped.push(json!({
+            "path": missing,
+            "verdict": "error",
+            "reason": ["path does not exist"],
+        }));
+    }
 
     let mut selected: Vec<PathBuf> = Vec::new();
+    let mut selected_profiles: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut profile_conflicts: Vec<String> = Vec::new();
+
     for inspection in &inspections {
         let runnable = inspection.report.verdict == Verdict::RunnableSubset;
-        if runnable || args.include_blocked {
-            selected.push(inspection.path.clone());
-        } else {
+        if !runnable && !args.include_blocked {
             let reason = inspection
                 .report
                 .errors()
@@ -588,20 +761,127 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
                 "verdict": verdict_label(inspection.report.verdict),
                 "reason": if reason.is_empty() { vec!["not runnable by Vibe's Forge API subset".to_string()] } else { reason },
             }));
+            continue;
         }
+
+        let resolution = matrix.resolve(
+            &ModRequirements::from_metadata(&inspection.metadata),
+            requested,
+        );
+        let label = inspection.primary_mod_id();
+        let Some(profile_id) = resolution.selected.clone() else {
+            let mut reasons = resolution.reasons.clone();
+            if reasons.is_empty() {
+                reasons.push(format!(
+                    "no compatibility profile was resolved ({})",
+                    resolution.status.as_str()
+                ));
+            }
+            if requested.is_some() {
+                profile_conflicts.push(format!(
+                    "{} does not match the requested profile: {}",
+                    label,
+                    reasons.join("; ")
+                ));
+            }
+            skipped.push(json!({
+                "path": inspection.path,
+                "verdict": verdict_label(inspection.report.verdict),
+                "profile_status": resolution.status,
+                "reason": reasons,
+            }));
+            continue;
+        };
+
+        let Some(profile) = matrix.get(&profile_id) else {
+            profile_conflicts.push(format!(
+                "{} resolved to unknown profile {profile_id}",
+                label
+            ));
+            continue;
+        };
+        if !profile.allows_runtime() {
+            skipped.push(json!({
+                "path": inspection.path,
+                "verdict": verdict_label(inspection.report.verdict),
+                "profile": profile_id,
+                "reason": [format!(
+                    "profile {profile_id} is {} with no runtime backend; Vibe can inspect and export this mod but cannot execute its Java code",
+                    profile.status.as_str()
+                )],
+            }));
+            continue;
+        }
+
+        selected.push(inspection.path.clone());
+        selected_profiles.entry(profile_id).or_default().push(label);
     }
+
+    if !profile_conflicts.is_empty() {
+        let report = json!({
+            "started": false,
+            "reason": "the requested compatibility profile does not cover every runnable mod",
+            "requested_profile": requested,
+            "profile_conflicts": profile_conflicts,
+            "skipped": skipped,
+        });
+        if json {
+            print_json(&report)?;
+        } else {
+            println!("Vibe did not start the runtime: the requested profile is not compatible with every runnable mod.");
+            for conflict in &profile_conflicts {
+                println!("  CONFLICT {conflict}");
+            }
+            for entry in &skipped {
+                println!(
+                    "  SKIP {} [{}]",
+                    entry.get("path").and_then(Value::as_str).unwrap_or("?"),
+                    entry.get("verdict").and_then(Value::as_str).unwrap_or("?")
+                );
+            }
+            println!("\nRun `vibe inspect --profile <id> <jar>` to see the exact mismatch.");
+        }
+        return Ok(EXIT_PROFILE_CONFLICT);
+    }
+
+    if requested.is_none() && selected_profiles.len() > 1 {
+        let detail: Vec<String> = selected_profiles
+            .iter()
+            .map(|(profile, mods)| format!("{profile}: {}", mods.join(", ")))
+            .collect();
+        let report = json!({
+            "started": false,
+            "reason": "the selected mods target more than one compatibility profile; Vibe runs one profile per JVM",
+            "profiles": selected_profiles,
+            "skipped": skipped,
+        });
+        if json {
+            print_json(&report)?;
+        } else {
+            println!("Vibe did not start the runtime: the selected mods target more than one compatibility profile.");
+            for line in &detail {
+                println!("  {line}");
+            }
+            println!("\nRun `vibe run --profile <id> <mods...>` to choose one profile, or remove the mods that target another.");
+        }
+        return Ok(EXIT_PROFILE_CONFLICT);
+    }
+
+    let active_profile = requested
+        .map(str::to_string)
+        .or_else(|| selected_profiles.keys().next().cloned());
 
     if selected.is_empty() {
         let report = json!({
             "started": false,
-            "reason": "no jar is runnable by Vibe's Forge API subset; inspect the blockers or pass --include-blocked for diagnostics",
+            "reason": "no jar is runnable under a runtime-capable compatibility profile; inspect the blockers or pass --profile for a mod without a Minecraft declaration",
             "jars": inspections.iter().map(|inspection| inspection.summary()).collect::<Vec<_>>(),
             "skipped": skipped,
         });
         if json {
             print_json(&report)?;
         } else {
-            println!("Vibe did not start the runtime: no jar is runnable.");
+            println!("Vibe did not start the runtime: no jar is runnable under a runtime-capable profile.");
             for entry in &skipped {
                 println!(
                     "  SKIP {} [{}]",
@@ -618,6 +898,15 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         }
         return Ok(3);
     }
+
+    let Some(active_profile) = active_profile else {
+        // selected is non-empty, so at least one profile was resolved.
+        return Ok(EXIT_PROFILE_CONFLICT);
+    };
+    let profile = matrix.get(&active_profile).ok_or_else(|| {
+        VibeError::Config(format!("unknown compatibility profile {active_profile}"))
+    })?;
+    let backend = profile.backend.clone();
 
     let java = locate_java(args.java.as_deref())?;
     let runtime = match resolve_runtime(args.runtime) {
@@ -638,6 +927,8 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
     let side = args.side.to_uppercase();
     let mut options = RuntimeOptions::new(java, runtime);
     options.side = side.clone();
+    options.profile = Some(active_profile.clone());
+    options.backend = backend.clone();
     options.max_heap_mb = args.heap_mb;
     options.start_timeout = Duration::from_millis(args.timeout_ms.max(1_000));
     options.request_timeout = Duration::from_millis(args.timeout_ms.max(1_000));
@@ -653,7 +944,12 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
     let mut registry = None;
     let outcome: Result<()> = (|| {
         info = Some(client.runtime_info()?);
-        load = Some(client.load_mods(&selected, &side)?);
+        load = Some(client.load_mods_with_profile(
+            &selected,
+            &side,
+            Some(&active_profile),
+            backend.as_deref(),
+        )?);
         lifecycle = Some(client.start_lifecycle()?);
         status = Some(client.mod_status()?);
         registry = Some(client.registry_snapshot()?);
@@ -671,6 +967,14 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         "started": true,
         "session": session,
         "side": side,
+        "profile": json!({
+            "id": active_profile,
+            "backend": backend,
+            "status": profile.status,
+            "minecraft": profile.minecraft,
+            "forge_version": profile.forge_version,
+            "java_release": profile.java_release,
+        }),
         "hello": hello,
         "info": info,
         "load": load,
@@ -693,6 +997,12 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         );
         println!("  session: {}", report["session"].as_str().unwrap_or("?"));
         println!("  side:    {side}");
+        println!(
+            "  profile: {active_profile} (Minecraft {}, Forge {}, backend {})",
+            profile.minecraft,
+            profile.forge_version,
+            backend.as_deref().unwrap_or("none")
+        );
         if let Some(info) = &info {
             println!(
                 "  runtime java: {}",
@@ -776,6 +1086,11 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
                 entry.get("path").and_then(Value::as_str).unwrap_or("?"),
                 entry.get("verdict").and_then(Value::as_str).unwrap_or("?")
             );
+            if let Some(reasons) = entry.get("reason").and_then(Value::as_array) {
+                for reason in reasons {
+                    println!("       {}", reason.as_str().unwrap_or("?"));
+                }
+            }
         }
         if let Err(error) = &outcome {
             println!("\nRuntime request failed: {error}");
@@ -789,6 +1104,56 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         return Ok(4);
     }
     Ok(if lifecycle_ok { 0 } else { 4 })
+}
+
+// ---------------------------------------------------------------------------
+// profiles
+// ---------------------------------------------------------------------------
+
+fn profiles(args: ProfilesArgs, json: bool) -> Result<u8> {
+    let matrix = ProfileMatrix::embedded()?;
+    let listed: Vec<_> = matrix
+        .profiles
+        .iter()
+        .filter(|profile| !args.runtime_only || profile.allows_runtime())
+        .collect();
+
+    if json {
+        print_json(&json!({
+            "schema": matrix.schema,
+            "horizon_content_api": matrix.horizon_content_api,
+            "runtime_only": args.runtime_only,
+            "profiles": listed,
+        }))?;
+    } else {
+        println!(
+            "Vibe compatibility profiles (Horizon content API {})",
+            matrix.horizon_content_api
+        );
+        if listed.is_empty() {
+            println!("  No profile matches this filter.");
+        }
+        for profile in listed {
+            println!(
+                "  {:<20} Minecraft {:<8} Forge {:<10} Java {:<2} {}",
+                profile.id,
+                profile.minecraft,
+                profile.forge_range,
+                profile.java_release,
+                profile.status.as_str()
+            );
+            match &profile.backend {
+                Some(backend) => println!("    backend: {backend}"),
+                None => println!("    backend: none (metadata and content export only)"),
+            }
+            if let Some(notes) = &profile.notes {
+                println!("    {notes}");
+            }
+        }
+        println!("\nVibe's own version is independent from these Minecraft/Forge targets.");
+        println!("A run uses exactly one profile; a mod must declare a target Vibe can match.");
+    }
+    Ok(0)
 }
 
 // ---------------------------------------------------------------------------

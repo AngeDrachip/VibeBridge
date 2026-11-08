@@ -20,6 +20,10 @@ pub struct RuntimeOptions {
     pub runtime: PathBuf,
     pub max_heap_mb: u32,
     pub side: String,
+    /// The one Minecraft/Forge compatibility profile for this JVM session.
+    pub profile: Option<String>,
+    /// The Vibe API backend serving `profile`.
+    pub backend: Option<String>,
     pub java_args: Vec<String>,
     pub start_timeout: Duration,
     pub request_timeout: Duration,
@@ -33,6 +37,8 @@ impl RuntimeOptions {
             runtime: runtime.into(),
             max_heap_mb: 2048,
             side: "SERVER".into(),
+            profile: None,
+            backend: None,
             java_args: Vec::new(),
             start_timeout: Duration::from_secs(15),
             request_timeout: Duration::from_secs(30),
@@ -47,6 +53,7 @@ pub struct RuntimeEvent {
     pub data: Value,
 }
 
+#[allow(clippy::large_enum_variant)] // short-lived, bounded by the channel
 enum Inbound {
     Message(Message),
     Malformed(String),
@@ -82,6 +89,12 @@ impl RuntimeClient {
         command.arg("-Dfile.encoding=UTF-8");
         command.arg(format!("-Dvibe.session={session}"));
         command.arg(format!("-Dvibe.side={}", options.side));
+        if let Some(profile) = &options.profile {
+            command.arg(format!("-Dvibe.profile={profile}"));
+        }
+        if let Some(backend) = &options.backend {
+            command.arg(format!("-Dvibe.backend={backend}"));
+        }
         for arg in &options.java_args {
             command.arg(arg);
         }
@@ -149,6 +162,9 @@ impl RuntimeClient {
                 arch: std::env::consts::ARCH.into(),
                 pid: 0,
                 supported_forge_api: Vec::new(),
+                supported_profiles: Vec::new(),
+                active_profile: options.profile.clone(),
+                backend: options.backend.clone(),
             },
             next_id: 1,
             request_timeout: options.request_timeout,
@@ -313,17 +329,33 @@ impl RuntimeClient {
     }
 
     pub fn load_mods(&mut self, paths: &[PathBuf], side: &str) -> Result<Value> {
+        self.load_mods_with_profile(paths, side, None, None)
+    }
+
+    /// Load mods under one explicit compatibility profile. The Java runtime
+    /// rejects a profile it has no backend for; it never silently substitutes.
+    pub fn load_mods_with_profile(
+        &mut self,
+        paths: &[PathBuf],
+        side: &str,
+        profile: Option<&str>,
+        backend: Option<&str>,
+    ) -> Result<Value> {
         let paths: Vec<String> = paths
             .iter()
             .map(|path| path.to_string_lossy().into_owned())
             .collect();
-        self.request(
-            crate::protocol::method::LOAD_MODS,
-            json!({
-                "paths": paths,
-                "side": side,
-            }),
-        )
+        let mut params = json!({
+            "paths": paths,
+            "side": side,
+        });
+        if let Some(profile) = profile {
+            params["profile"] = json!(profile);
+        }
+        if let Some(backend) = backend {
+            params["backend"] = json!(backend);
+        }
+        self.request(crate::protocol::method::LOAD_MODS, params)
     }
 
     pub fn start_lifecycle(&mut self) -> Result<Value> {

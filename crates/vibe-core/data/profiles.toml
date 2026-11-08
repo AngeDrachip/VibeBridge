@@ -1,0 +1,55 @@
+# Vibe compatibility profiles.
+#
+# This is the machine-readable compatibility matrix embedded into vibe-core.
+# Vibe's own release version is independent from these entries. A profile fixes
+# the Minecraft version, the Forge loader family, the Java level, and the API
+# backend used for one runtime session.
+#
+# status:
+#   experimental-subset  Vibe has a tested clean-room Forge API subset backend.
+#                        Simple mods can run, but this is not Minecraft gameplay
+#                        parity and is not a claim about third-party mods.
+#   metadata-only        Vibe can detect, plan, inspect, and export assets/data,
+#                        but has no runtime backend for this target.
+#
+# Do not add a profile until its Minecraft/Forge version pair and loader family
+# have been verified. Do not mark a profile experimental-subset without a
+# backend and a test that exercises it.
+
+schema = 1
+horizon_content_api = "0.2"
+
+[[profiles]]
+id = "forge-1.20.1-47"
+display_name = "Forge 47 / Minecraft 1.20.1"
+minecraft = "1.20.1"
+minecraft_range = "[1.20.1,1.20.2)"
+forge_version = "47.4.28"
+forge_range = "[47,48)"
+java_release = 17
+backend = "forge-api-subset-v1"
+status = "experimental-subset"
+notes = "Forge 47.x targets Minecraft 1.20.1. Runtime support is the Vibe Forge API subset, not Minecraft."
+
+[[profiles]]
+id = "forge-1.21.1-52"
+display_name = "Forge 52 / Minecraft 1.21.1"
+minecraft = "1.21.1"
+minecraft_range = "[1.21.1,1.21.2)"
+forge_version = "52.1.20"
+forge_range = "[52,53)"
+java_release = 21
+backend = "forge-api-subset-v1"
+status = "experimental-subset"
+notes = "Forge 52.x targets Minecraft 1.21.1. Runtime support is the Vibe Forge API subset, not Minecraft."
+
+[[profiles]]
+id = "forge-26.3-66"
+display_name = "Forge 66 / Minecraft 26.3"
+minecraft = "26.3"
+minecraft_range = "[26.3,26.4)"
+forge_version = "66.1.0"
+forge_range = "[66,67)"
+java_release = 21
+status = "metadata-only"
+notes = "Horizon-aligned target. Vibe detects, plans, inspects, and exports content, but has no runtime backend for Forge 66 gameplay code."

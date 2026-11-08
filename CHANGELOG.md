@@ -6,6 +6,52 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-08
+
+### Added
+
+- Version-independent compatibility profiles. Vibe's own release version is now
+  separate from the Minecraft, Forge, and Horizon versions it targets.
+- `crates/vibe-core/data/profiles.toml`: an embedded matrix with
+  `forge-1.20.1-47`, `forge-1.21.1-52`, and `forge-26.3-66`, including real
+  Minecraft ranges, Forge loader ranges, Java levels, backends, and statuses.
+- `ProfileMatrix` resolution: a mod is matched from its declared Minecraft and
+  Forge ranges. Missing declarations are `undeclared`, several matches are
+  `ambiguous`, and no match is `unsupported`; Vibe never guesses.
+- `vibe profiles [--runtime-only]` lists the embedded matrix in human or JSON
+  form.
+- `--profile <id>` for `inspect`, `plan`, and `run`. Explicit profiles are
+  checked against declarations rather than assumed.
+- Per-mod profile data in inspection and planning output (`target_profile`,
+  `profile_status`, declared ranges, and reasons) plus plan-level
+  `profile` / `profile_conflicts`.
+- `vibe run` enforces one runtime-capable profile per JVM, skips mods that
+  resolve to a metadata-only target with an explicit reason, and exits `5` on a
+  profile conflict or an unsupported explicit profile.
+- The bridge handshake and `runtime.info` now report `supported_profiles`,
+  `active_profile`, and `backend`; `mods.load` carries and validates the active
+  profile and backend. The Java runtime rejects a profile or backend it does not
+  provide.
+- Metadata parsing now records the declared Minecraft and Forge ranges from
+  modern `mods.toml` dependencies and legacy `mcmod.info`, with conflict
+  handling instead of guessing.
+- CLI integration tests cover matched, unsupported, ambiguous, mixed-profile,
+  explicit-profile, metadata-only, and undeclared-target cases.
+
+### Changed
+
+- `hello-forge` and `legacy-hello` now declare Minecraft `[1.21.1,1.22)` and
+  Forge `[52,53)`, so they resolve to `forge-1.21.1-52`.
+- Vibe and the Java runtime report version `0.3.0`.
+
+### Known limitations
+
+- `forge-26.3-66` is metadata-only: Vibe can inspect, plan, and export content
+  for the Horizon-aligned target, but cannot execute Forge 66 Java code.
+- A profile is a version target, not a compatibility guarantee. The runtime
+  backend remains the tested clean-room Forge API subset.
+- Horizon still has no JVM and cannot execute Java/Forge gameplay code.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added

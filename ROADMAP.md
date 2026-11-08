@@ -51,7 +51,27 @@ result easier to trust.
 Exit criteria: each blocker kind has a fixture and an asserted report; no new
 runtime API is added.
 
-## 0.3 - Expand the runtime subset carefully
+## 0.3.0 - Independent compatibility profiles (done)
+
+Goal: separate Vibe's release version from Minecraft, Forge, and Horizon
+versions, and make one profile per run explicit.
+
+- [x] Embedded profile matrix with real Minecraft/Forge ranges, Java levels,
+      backends, and statuses.
+- [x] Modern `mods.toml` and legacy `mcmod.info` target detection.
+- [x] Matched / ambiguous / unsupported / undeclared resolution without
+      guessing.
+- [x] `vibe profiles`, `--profile` on `inspect`/`plan`/`run`, and per-mod
+      profile data in JSON.
+- [x] One runtime-capable profile per JVM, with exit `5` on conflicts and on
+      metadata-only targets.
+- [x] Profile/backend validation in the bridge handshake and `mods.load`.
+
+Exit criteria: a mod's declared target is reported, mixed or missing targets are
+refused rather than guessed, and the runtime never claims a backend it does not
+provide.
+
+## 0.4 - Expand the runtime subset carefully
 
 Goal: support more Forge-shaped mods that do not touch Minecraft classes.
 
@@ -70,7 +90,7 @@ Exit criteria: every new API name appears in both implementation lists, has a
 compile-time fixture, and appears in `COMPATIBILITY.md`. No Minecraft class is
 implemented.
 
-## 0.4 - Horizon workflow integration
+## 0.5 - Horizon workflow integration
 
 Goal: reduce manual steps while staying on documented surfaces.
 

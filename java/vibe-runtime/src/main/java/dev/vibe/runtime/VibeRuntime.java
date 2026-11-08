@@ -28,7 +28,17 @@ public final class VibeRuntime {
     /** Must match {@code vibe_bridge::protocol::PROTOCOL_VERSION}. */
     public static final int PROTOCOL_VERSION = 1;
     public static final String RUNTIME_NAME = "vibe-runtime";
-    public static final String RUNTIME_VERSION = "0.2.0";
+    public static final String RUNTIME_VERSION = "0.3.0";
+    public static final String BACKEND = "forge-api-subset-v1";
+
+    /**
+     * Compatibility profiles this runtime has a tested backend for. The
+     * metadata-only profiles in the Rust matrix are intentionally absent:
+     * Vibe can inspect and export them, but cannot execute their Java code.
+     */
+    public static final List<String> SUPPORTED_PROFILES = List.of(
+            "forge-1.20.1-47",
+            "forge-1.21.1-52");
 
     /**
      * The Forge API names Vibe implements. Kept in sync with
@@ -74,12 +84,18 @@ public final class VibeRuntime {
     private final PrintStream protocolOut;
     private final BufferedReader protocolIn;
     private String side;
+    private String profile;
+    private String backend;
 
     private VibeRuntime(PrintStream protocolOut, BufferedReader protocolIn) {
         this.protocolOut = protocolOut;
         this.protocolIn = protocolIn;
         String configured = System.getProperty("vibe.side", "SERVER");
         this.side = configured.isBlank() ? "SERVER" : configured.toUpperCase();
+        String configuredProfile = System.getProperty("vibe.profile", "").trim();
+        this.profile = configuredProfile.isEmpty() ? null : configuredProfile;
+        String configuredBackend = System.getProperty("vibe.backend", "").trim();
+        this.backend = configuredBackend.isEmpty() ? null : configuredBackend;
     }
 
     public static void main(String[] args) throws Exception {
@@ -116,7 +132,10 @@ public final class VibeRuntime {
                 "os", System.getProperty("os.name", "unknown"),
                 "arch", System.getProperty("os.arch", "unknown"),
                 "pid", ProcessHandle.current().pid(),
-                "supported_forge_api", new ArrayList<>(SUPPORTED_FORGE_API)));
+                "supported_forge_api", new ArrayList<>(SUPPORTED_FORGE_API),
+                "supported_profiles", new ArrayList<>(SUPPORTED_PROFILES),
+                "active_profile", profile,
+                "backend", backend));
 
         boolean welcomed = false;
         boolean running = true;
@@ -224,7 +243,27 @@ public final class VibeRuntime {
                     if (requestedSide != null && !requestedSide.isBlank()) {
                         side = requestedSide.toUpperCase();
                     }
-                    respond(id, mods.load(paths, side));
+                    String requestedProfile = Json.string(params, "profile");
+                    if (requestedProfile != null && !requestedProfile.isBlank()) {
+                        if (!SUPPORTED_PROFILES.contains(requestedProfile)) {
+                            respondError(id, "unsupported_profile",
+                                    "the Vibe runtime has no backend for profile " + requestedProfile,
+                                    "supported_profiles=" + SUPPORTED_PROFILES);
+                            return true;
+                        }
+                        profile = requestedProfile;
+                    }
+                    String requestedBackend = Json.string(params, "backend");
+                    if (requestedBackend != null && !requestedBackend.isBlank()) {
+                        if (!BACKEND.equals(requestedBackend)) {
+                            respondError(id, "unsupported_backend",
+                                    "the Vibe runtime does not provide backend " + requestedBackend,
+                                    "backend=" + BACKEND);
+                            return true;
+                        }
+                        backend = requestedBackend;
+                    }
+                    respond(id, mods.load(paths, side, profile, backend));
                     return true;
                 }
                 case "lifecycle.start" -> {
@@ -272,10 +311,14 @@ public final class VibeRuntime {
                         "arch", System.getProperty("os.arch", "unknown")),
                 "pid", ProcessHandle.current().pid(),
                 "supported_forge_api", new ArrayList<>(SUPPORTED_FORGE_API),
+                "supported_profiles", new ArrayList<>(SUPPORTED_PROFILES),
+                "active_profile", profile,
+                "backend", backend,
                 "limitations", List.of(
                         "No Minecraft classes are provided.",
                         "Mixin, coremods, access transformers, and nested jars are not executed.",
-                        "Only the Forge API names in supported_forge_api are present."));
+                        "Only the Forge API names in supported_forge_api are present.",
+                        "One compatibility profile is active per JVM; mods targeting another profile are rejected."));
     }
 
     private static List<Path> readPaths(Map<String, Object> params) {

@@ -1,12 +1,12 @@
 # Compatibility
 
-This document describes exactly what Vibe 0.2.0 implements and what it does not.
+This document describes exactly what Vibe 0.3.0 implements and what it does not.
 It is deliberately narrower than "Forge compatibility". A `runnable-subset`
 verdict means Vibe found no hard blocker and can construct the mod's entrypoint
 against the API listed here; it does not mean the mod will behave like it does
 in Minecraft.
 
-Last updated: 2026-11-07.
+Last updated: 2026-11-08.
 
 ## Verdicts
 
@@ -19,6 +19,36 @@ Last updated: 2026-11-07.
 
 Warnings (nested jars, native libraries, unparseable class files, missing Forge
 metadata) are reported but do not by themselves block a run.
+
+## Compatibility profiles
+
+Vibe's release version is independent from Minecraft and Forge. A profile fixes
+one Minecraft version, one Forge loader family, a Java level, and a runtime
+backend. The embedded matrix is in `crates/vibe-core/data/profiles.toml`.
+
+| Profile | Minecraft | Forge | Java | Status | Runtime backend |
+| --- | --- | --- | --- | --- | --- |
+| `forge-1.20.1-47` | 1.20.1 | 47.x | 17 | `experimental-subset` | `forge-api-subset-v1` |
+| `forge-1.21.1-52` | 1.21.1 | 52.x | 21 | `experimental-subset` | `forge-api-subset-v1` |
+| `forge-26.3-66` | 26.3 | 66.x | 21 | `metadata-only` | none |
+
+- `experimental-subset` means the clean-room Forge API subset can run the tested
+  fixture shape. It is not Minecraft gameplay parity and is not a claim about
+  third-party mods.
+- `metadata-only` means detection, planning, inspection, and content export are
+  available, but `vibe run` refuses to execute Java code for that target.
+- A mod's target is read from a `minecraft` dependency and `loaderVersion` in
+  `mods.toml`, or from `mcmod.info` (`acceptedMinecraftVersions` preferred over
+  `mcversion`).
+- Vibe resolves a profile only when exactly one profile matches both the
+  Minecraft and Forge declarations. Missing declarations are `undeclared`;
+  several matches are `ambiguous`. Neither is guessed.
+- `--profile <id>` chooses explicitly but is still checked against the
+  declarations. One JVM run uses one profile.
+
+The Java runtime reports `supported_profiles` in its handshake and rejects a
+profile or backend it does not provide. `forge-26.3-66` is intentionally absent
+from that list.
 
 ## Implemented Forge API
 
@@ -158,8 +188,11 @@ posted.
 
 `vibe plan` reads metadata only. It reports duplicate mod ids, dependency
 ordering, missing dependencies, declared version ranges, version mismatches,
-namespace conflicts, and cycles. It never downloads, resolves, or executes a
-mod.
+namespace conflicts, cycles, each mod's compatibility profile, and plan-level
+profile conflicts. It never downloads, resolves, or executes a mod. A plan has
+one profile only when every planned mod agrees; otherwise the conflicts are
+listed. An explicit `--profile` that is not satisfied makes `vibe plan` exit
+`5`.
 
 `--side CLIENT|SERVER` makes the plan side-aware:
 
@@ -245,13 +278,16 @@ The automated suite compiles and runs two fixtures against the real shim:
 Observed integration result with both fixtures and `--side SERVER`:
 
 ```text
+profile: forge-1.21.1-52 (Minecraft 1.21.1, Forge 52.1.20)
 loaded 2 mod entrypoint(s)
 lifecycle: phase=complete, ok=true
 event records: 9/9 succeeded
 ```
 
-The fixture resources also export to a Horizon `.hmod` whose manifest is
-validated (`api = "0.2"`, `capabilities = ["registries"]`).
+Both fixtures declare Minecraft `[1.21.1,1.22)` and Forge `[52,53)`, so they
+resolve to `forge-1.21.1-52`. The fixture resources also export to a Horizon
+`.hmod` whose manifest is validated (`api = "0.2"`,
+`capabilities = ["registries"]`).
 
 ### Blocked-case fixtures
 
@@ -301,10 +337,11 @@ claimed as supported until a test for it is added and recorded here.
 When reporting a result, include:
 
 1. the exact jar (name, version, SHA-256 if possible);
-2. `vibe inspect --json <jar>` output;
-3. `vibe run --json <jar>` output when the verdict is `runnable-subset`;
-4. the Java version selected by `vibe doctor`;
-5. whether the claim is about running the lifecycle or only about export.
+2. `vibe profiles` and the resolved profile id;
+3. `vibe inspect --json <jar>` output;
+4. `vibe run --json <jar>` output when the verdict is `runnable-subset`;
+5. the Java version selected by `vibe doctor`;
+6. whether the claim is about running the lifecycle or only about export.
 
 Do not describe a successful fixture run as evidence that general Forge mods run
 on Horizon.

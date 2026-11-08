@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use vibe_core::metadata::{Dependency, ModSide};
+use vibe_core::profile::{ModRequirements, ProfileMatrix, ResolutionStatus};
 use vibe_core::version::VersionRange;
 use vibe_core::{ModId, Verdict};
 use vibe_loader::JarInspection;
@@ -23,6 +24,21 @@ pub struct RegisteredMod {
     pub side: ModSide,
     pub dependencies: Vec<Dependency>,
     pub namespaces: Vec<String>,
+    /// The compatibility profile this mod resolved to, if exactly one matched.
+    #[serde(default)]
+    pub target_profile: Option<String>,
+    /// How the profile was resolved (`matched`, `ambiguous`, ...).
+    #[serde(default)]
+    pub profile_status: Option<ResolutionStatus>,
+    /// The Minecraft range declared by the mod, kept verbatim.
+    #[serde(default)]
+    pub minecraft_range: Option<String>,
+    /// The Forge loader range declared by the mod, kept verbatim.
+    #[serde(default)]
+    pub forge_range: Option<String>,
+    /// Why the profile did not resolve, for diagnostics.
+    #[serde(default)]
+    pub profile_reasons: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -69,6 +85,13 @@ pub struct DuplicateId {
 pub struct RegistryPlan {
     /// The side this plan was built for; `None` means every scanned jar.
     pub side: Option<ModSide>,
+    /// The single compatibility profile shared by every planned mod, when one
+    /// profile covers the whole set.
+    #[serde(default)]
+    pub profile: Option<String>,
+    /// Mods that could not be assigned to one shared profile.
+    #[serde(default)]
+    pub profile_conflicts: Vec<String>,
     pub mods: Vec<RegisteredMod>,
     pub load_order: Vec<ModId>,
     pub missing_dependencies: Vec<MissingDependency>,
@@ -104,7 +127,7 @@ impl RegistryPlan {
 
 /// Build a plan from inspected jars, covering both sides.
 pub fn plan(inspections: &[JarInspection]) -> RegistryPlan {
-    plan_for_side(inspections, None)
+    plan_for_side_with_profile(inspections, None, None)
 }
 
 /// Build a plan for one runtime side.
@@ -114,14 +137,36 @@ pub fn plan(inspections: &[JarInspection]) -> RegistryPlan {
 /// missing. `None` plans every scanned jar, which is what `vibe plan` did
 /// before side selection existed.
 pub fn plan_for_side(inspections: &[JarInspection], side: Option<ModSide>) -> RegistryPlan {
-    let (mods, duplicate_ids) = collect_mods(inspections);
+    plan_for_side_with_profile(inspections, side, None)
+}
+
+/// Build a side-aware plan and resolve every mod against the embedded
+/// compatibility matrix. `requested_profile` is an explicit `--profile` choice;
+/// it is checked against each mod's declarations rather than assumed.
+pub fn plan_for_side_with_profile(
+    inspections: &[JarInspection],
+    side: Option<ModSide>,
+    requested_profile: Option<&str>,
+) -> RegistryPlan {
+    let matrix = ProfileMatrix::embedded();
+    let (mods, duplicate_ids) = collect_mods(inspections, matrix.as_ref().ok(), requested_profile);
     build_plan(mods, duplicate_ids, side)
 }
 
-fn collect_mods(inspections: &[JarInspection]) -> (Vec<RegisteredMod>, Vec<DuplicateId>) {
+fn collect_mods(
+    inspections: &[JarInspection],
+    matrix: Option<&ProfileMatrix>,
+    requested_profile: Option<&str>,
+) -> (Vec<RegisteredMod>, Vec<DuplicateId>) {
     let mut mods = Vec::new();
     let mut seen: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
     for inspection in inspections {
+        let resolution = matrix.map(|matrix| {
+            matrix.resolve(
+                &ModRequirements::from_metadata(&inspection.metadata),
+                requested_profile,
+            )
+        });
         let mut namespaces: BTreeSet<String> = BTreeSet::new();
         namespaces.extend(inspection.asset_namespaces.iter().cloned());
         namespaces.extend(inspection.data_namespaces.iter().cloned());
@@ -148,6 +193,28 @@ fn collect_mods(inspections: &[JarInspection]) -> (Vec<RegisteredMod>, Vec<Dupli
             mod_namespaces.sort();
             mod_namespaces.dedup();
 
+            let (target_profile, profile_status, minecraft_range, forge_range, profile_reasons) =
+                match &resolution {
+                    Some(resolution) => (
+                        resolution.selected.clone(),
+                        Some(resolution.status),
+                        resolution.requirements.minecraft_range.clone(),
+                        resolution.requirements.loader_range.clone(),
+                        if resolution.is_matched() {
+                            Vec::new()
+                        } else {
+                            resolution.reasons.clone()
+                        },
+                    ),
+                    None => (
+                        None,
+                        None,
+                        inspection.metadata.minecraft_version_range.clone(),
+                        inspection.metadata.forge_version_range.clone(),
+                        vec!["the embedded profile matrix could not be loaded".to_string()],
+                    ),
+                };
+
             mods.push(RegisteredMod {
                 id,
                 version: metadata.version.clone(),
@@ -158,11 +225,15 @@ fn collect_mods(inspections: &[JarInspection]) -> (Vec<RegisteredMod>, Vec<Dupli
                 side: metadata.side,
                 dependencies,
                 namespaces: mod_namespaces,
+                target_profile,
+                profile_status,
+                minecraft_range,
+                forge_range,
+                profile_reasons,
             });
         }
     }
 
-    mods.sort_by(|a, b| a.id.cmp(&b.id));
     mods.sort_by(|a, b| a.id.cmp(&b.id));
     let duplicate_ids: Vec<DuplicateId> = seen
         .into_iter()
@@ -246,8 +317,39 @@ fn build_plan(
     let (load_order, cycles) = topological_order(&mods);
     let (namespace_owners, namespace_conflicts) = namespace_index(&mods);
 
+    let mut profiles: BTreeSet<String> = BTreeSet::new();
+    let mut profile_conflicts = Vec::new();
+    for module in &mods {
+        match &module.target_profile {
+            Some(profile) => {
+                profiles.insert(profile.clone());
+            }
+            None => {
+                let reasons = if module.profile_reasons.is_empty() {
+                    "no compatibility profile was resolved".to_string()
+                } else {
+                    module.profile_reasons.join("; ")
+                };
+                profile_conflicts.push(format!("{}: {reasons}", module.id));
+            }
+        }
+    }
+    let profile = if profiles.len() == 1 && profile_conflicts.is_empty() {
+        profiles.iter().next().cloned()
+    } else {
+        if profiles.len() > 1 {
+            profile_conflicts.push(format!(
+                "mods target different profiles: {}",
+                profiles.iter().cloned().collect::<Vec<_>>().join(", ")
+            ));
+        }
+        None
+    };
+
     RegistryPlan {
         side,
+        profile,
+        profile_conflicts,
         mods,
         load_order,
         missing_dependencies,
@@ -431,6 +533,11 @@ mod tests {
                 })
                 .collect(),
             namespaces: vec![id.into()],
+            target_profile: Some("forge-1.21.1-52".into()),
+            profile_status: Some(ResolutionStatus::Matched),
+            minecraft_range: Some("[1.21.1,1.22)".into()),
+            forge_range: Some("[52,)".into()),
+            profile_reasons: Vec::new(),
         }
     }
 

@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
@@ -80,6 +80,17 @@ pub enum MetadataSource {
     Inferred,
 }
 
+impl MetadataSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::ModsToml => "mods.toml",
+            Self::McModInfo => "mcmod.info",
+            Self::ManifestOnly => "manifest",
+            Self::Inferred => "inferred",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Dependency {
     pub mod_id: String,
@@ -106,6 +117,16 @@ pub struct ModMetadata {
 pub struct ModFileMetadata {
     pub loader: LoaderKind,
     pub loader_version: Option<String>,
+    /// The Minecraft version range declared by the mod, kept verbatim.
+    ///
+    /// Modern mods declare it as a `minecraft` dependency; legacy mods declare
+    /// it in `mcmod.info`. When bundled mods disagree, this is `None` and a
+    /// warning explains why Vibe refuses to guess.
+    #[serde(default)]
+    pub minecraft_version_range: Option<String>,
+    /// The Forge loader range (`loaderVersion` or a `forge` dependency).
+    #[serde(default)]
+    pub forge_version_range: Option<String>,
     pub license: Option<String>,
     pub source: MetadataSource,
     pub mods: Vec<ModMetadata>,
@@ -288,9 +309,31 @@ pub fn parse_mods_toml(text: &str, jar_version: Option<&str>) -> Result<ModFileM
         }
     }
 
+    let mut minecraft_declarations = Vec::new();
+    let mut forge_declarations = Vec::new();
+    for deps in dependencies.values() {
+        for dep in deps {
+            match dep.mod_id.as_str() {
+                "minecraft" => minecraft_declarations.push(dep.version_range.clone()),
+                "forge" => forge_declarations.push(dep.version_range.clone()),
+                _ => {}
+            }
+        }
+    }
+    let minecraft_version_range =
+        unique_range(minecraft_declarations, "Minecraft version", &mut warnings);
+    let forge_version_range = if loader_version.is_some() {
+        // `loaderVersion` is the loader's own requirement and takes precedence.
+        loader_version.clone()
+    } else {
+        unique_range(forge_declarations, "Forge version", &mut warnings)
+    };
+
     Ok(ModFileMetadata {
         loader,
         loader_version,
+        minecraft_version_range,
+        forge_version_range,
         license,
         source: MetadataSource::ModsToml,
         mods,
@@ -316,11 +359,42 @@ pub fn parse_mcmod_info(text: &str) -> Result<ModFileMetadata> {
 
     let mut warnings = Vec::new();
     let mut mods = Vec::new();
+    let mut minecraft_declarations = Vec::new();
     for entry in entries {
         let Some(obj) = entry.as_object() else {
             warnings.push("mcmod.info contains a non-object entry".into());
             continue;
         };
+        // `acceptedMinecraftVersions` is more precise than `mcversion`; use it
+        // first and fall back to the single-version field.
+        let accepted = match obj.get("acceptedMinecraftVersions") {
+            Some(serde_json::Value::String(value)) => Some(value.clone()),
+            Some(serde_json::Value::Array(values)) => {
+                let ranges: Vec<String> = values
+                    .iter()
+                    .filter_map(|value| value.as_str())
+                    .map(|value| {
+                        let value = value.trim();
+                        if value.starts_with(['[', '(']) {
+                            value.to_string()
+                        } else {
+                            format!("[{value}]")
+                        }
+                    })
+                    .collect();
+                if ranges.is_empty() {
+                    None
+                } else {
+                    Some(ranges.join(","))
+                }
+            }
+            _ => None,
+        };
+        if let Some(range) = accepted {
+            minecraft_declarations.push(range);
+        } else if let Some(version) = obj.get("mcversion").and_then(|v| v.as_str()) {
+            minecraft_declarations.push(version.to_string());
+        }
         let raw_id = obj
             .get("modid")
             .or_else(|| obj.get("modId"))
@@ -384,9 +458,13 @@ pub fn parse_mcmod_info(text: &str) -> Result<ModFileMetadata> {
         });
     }
 
+    let minecraft_version_range =
+        unique_range(minecraft_declarations, "Minecraft version", &mut warnings);
     Ok(ModFileMetadata {
         loader: LoaderKind::Legacy,
         loader_version: None,
+        minecraft_version_range,
+        forge_version_range: None,
         license: None,
         source: MetadataSource::McModInfo,
         mods,
@@ -401,6 +479,8 @@ pub fn inferred_metadata(name: &str, manifest_version: Option<&str>) -> ModFileM
     ModFileMetadata {
         loader: LoaderKind::Unknown("none".into()),
         loader_version: None,
+        minecraft_version_range: None,
+        forge_version_range: None,
         license: None,
         source: MetadataSource::Inferred,
         mods: vec![ModMetadata {
@@ -418,6 +498,33 @@ pub fn inferred_metadata(name: &str, manifest_version: Option<&str>) -> ModFileM
         warnings: vec![format!(
             "no Forge metadata found; inferred mod id {id} from the file name"
         )],
+    }
+}
+
+/// Return the single distinct declaration, or `None` when bundled mods disagree.
+///
+/// Vibe never picks one of several conflicting version declarations. The
+/// warning is what makes the later "undeclared/ambiguous" report explainable.
+fn unique_range(
+    declarations: impl IntoIterator<Item = String>,
+    label: &str,
+    warnings: &mut Vec<String>,
+) -> Option<String> {
+    let unique: BTreeSet<String> = declarations
+        .into_iter()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .collect();
+    match unique.len() {
+        0 => None,
+        1 => unique.into_iter().next(),
+        _ => {
+            warnings.push(format!(
+                "conflicting {label} declarations ({}); Vibe cannot infer a profile",
+                unique.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+            None
+        }
     }
 }
 
@@ -480,16 +587,31 @@ side = "BOTH"
         let deps = &parsed.dependencies["examplemod"];
         assert_eq!(deps.len(), 2);
         assert!(deps.iter().all(|d| d.mandatory));
+        assert_eq!(parsed.minecraft_version_range.as_deref(), Some("[1.21.1,)"));
+        assert_eq!(parsed.forge_version_range.as_deref(), Some("[52,)"));
     }
 
     #[test]
     fn parses_legacy_mcmod_info() {
         let parsed = parse_mcmod_info(
-            r#"[{"modid":"legacy_mod","name":"Legacy","version":"1.0","authorList":["A"]}]"#,
+            r#"[{"modid":"legacy_mod","name":"Legacy","version":"1.0","authorList":["A"],"mcversion":"1.12.2"}]"#,
         )
         .unwrap();
         assert_eq!(parsed.loader, LoaderKind::Legacy);
         assert_eq!(parsed.mods[0].mod_id.as_str(), "legacy_mod");
+        assert_eq!(parsed.minecraft_version_range.as_deref(), Some("1.12.2"));
+    }
+
+    #[test]
+    fn legacy_accepted_minecraft_versions_win_over_mcversion() {
+        let parsed = parse_mcmod_info(
+            r#"[{"modid":"legacy_mod","mcversion":"1.12.2","acceptedMinecraftVersions":"[1.12,1.13)"}]"#,
+        )
+        .unwrap();
+        assert_eq!(
+            parsed.minecraft_version_range.as_deref(),
+            Some("[1.12,1.13)")
+        );
     }
 
     #[test]

@@ -63,13 +63,13 @@ launches the JVM.
 
 | Crate | Responsibility |
 | --- | --- |
-| `vibe-core` | Domain types (`ModId`, errors), Forge metadata parsing, Maven version/range handling, class-file parsing, compatibility analysis, and reusable configuration types. |
+| `vibe-core` | Domain types (`ModId`, errors), Forge metadata parsing, Maven version/range handling, class-file parsing, compatibility analysis, the embedded profile matrix, and reusable configuration types. |
 | `vibe-loader` | Recursive jar discovery, read-only zip inspection, manifest parsing, SHA-256, and extraction of class/resource facts. |
 | `vibe-registry` | Registration of inspected mods, duplicate ids, namespace ownership, missing dependencies, cycles, and deterministic topological ordering. |
 | `vibe-events` | Standalone typed host event bus and lifecycle state machine. It is tested and available to embedding hosts; the CLI's authoritative event records come from the Java runtime. |
 | `vibe-bridge` | Protocol types, JSON-lines codec, Java 17+ discovery, runtime process client, handshake, request timeouts, event collection, and stderr capture. |
 | `vibe-horizon` | `horizon-ctl` discovery/probe and Horizon `.hmod` content export. |
-| `vibe-cli` | The `vibe` binary: `doctor`, `inspect`, `plan`, `run`, `horizon probe`, `horizon export`, human and `--json` output. |
+| `vibe-cli` | The `vibe` binary: `doctor`, `inspect`, `plan`, `run`, `profiles`, `horizon probe`, `horizon export`, human and `--json` output. |
 | `java/vibe-forge-api` | Clean-room Forge-shaped classes and annotations used by mods. |
 | `java/vibe-runtime` | Java bridge process, class loading, mod construction, event dispatch, and lifecycle execution. |
 
@@ -115,6 +115,39 @@ prevent a run. The exact supported Forge API list is a constant shared by
 analysis and the Java runtime (see `SUPPORTED_FORGE_API` in
 `crates/vibe-core/src/analysis.rs`).
 
+## Compatibility profiles
+
+Vibe's own release version is independent from the Minecraft, Forge, and Horizon
+versions it targets. `crates/vibe-core/data/profiles.toml` is the machine-readable
+matrix, embedded into `vibe-core` with `include_str!` so a released binary always
+carries the profiles it was tested with.
+
+Each profile fixes:
+
+- an exact Minecraft version and the Maven range it covers;
+- a representative Forge loader version and loader family range;
+- the minimum Java release;
+- a Vibe API backend identifier, when one exists;
+- an honest status: `experimental-subset` or `metadata-only`.
+
+`ProfileMatrix::resolve` matches a mod's declared Minecraft range and Forge
+loader range against every profile. It returns `matched` only when exactly one
+profile is compatible. `ambiguous`, `unsupported`, and `undeclared` are explicit
+outcomes. An explicit `--profile` is checked against the declarations rather
+than assumed; a metadata-only profile is refused by `vibe run` before a JVM is
+started.
+
+`vibe-registry` resolves every inspected mod and carries `target_profile`,
+`profile_status`, the declared ranges, and failure reasons into the plan. A plan
+has one `profile` only when every planned mod agrees; otherwise
+`profile_conflicts` explains which mods disagree. `vibe run` enforces one
+runtime-capable profile per JVM and passes the profile id and backend to the
+sidecar through `-Dvibe.profile` and `-Dvibe.backend` and through `mods.load`.
+
+This is a Proton-like selection model, not universal compatibility: it lets Vibe
+grow version-specific backends without tying Vibe's release version to one
+Minecraft version.
+
 ## Registry and load plan
 
 `vibe-registry` registers mods by id and produces:
@@ -140,6 +173,7 @@ the input.
 
 ```text
 java -Xmx<heap>m -Dfile.encoding=UTF-8 -Dvibe.session=<id> -Dvibe.side=<side> \
+     -Dvibe.profile=<profile> -Dvibe.backend=<backend> \
      -jar <vibe-runtime.jar> --stdio
 ```
 
@@ -153,7 +187,7 @@ Protocol version 1 is UTF-8 JSON, one object per line.
 
 | `type` | Direction | Purpose |
 | --- | --- | --- |
-| `hello` | Java -> Rust | Protocol version, runtime name, Java version/vendor, OS, arch, pid, `supported_forge_api`. |
+| `hello` | Java -> Rust | Protocol version, runtime name, Java version/vendor, OS, arch, pid, `supported_forge_api`, `supported_profiles`, `active_profile`, `backend`. |
 | `welcome` | Rust -> Java | Confirms protocol version and session. |
 | `request` | Rust -> Java | `id`, `method`, `params`. |
 | `response` | Java -> Rust | Matching `id`, `ok`, `result` or `error`. |
@@ -165,8 +199,8 @@ Methods:
 | Method | Effect |
 | --- | --- |
 | `runtime.ping` | Liveness check. |
-| `runtime.info` | Runtime version, side, Java/OS details, supported API, limitations. |
-| `mods.load` | Load jars, inspect entries, construct `@Mod` classes, register subscribers. |
+| `runtime.info` | Runtime version, side, active profile/backend, Java/OS details, supported API and profiles, limitations. |
+| `mods.load` | Load jars under one profile/backend, inspect entries, construct `@Mod` classes, register subscribers. The runtime rejects a profile or backend it does not provide. |
 | `lifecycle.start` | Run the Forge-shaped lifecycle. |
 | `mods.status` | Current side, phase, mod statuses, failures. |
 | `registry.snapshot` | Mod ids, namespaces, event records. |
@@ -273,6 +307,9 @@ that is why this is not a security boundary.
   the others.
 - `vibe run` refuses to start when no selected jar is `runnable-subset`
   (exit `3`) unless `--include-blocked` is used for diagnostics.
+- `vibe run` refuses to start when the selected mods disagree on a runtime
+  profile, when an explicit profile is not satisfied, or when the profile is
+  metadata-only (exit `5`).
 - Runtime failures produce exit `4` with stderr tail or bridge error details.
 - Export validates the finished bundle before replacing an existing file.
 - Shutdown asks the runtime to stop, waits up to five seconds, then kills it.

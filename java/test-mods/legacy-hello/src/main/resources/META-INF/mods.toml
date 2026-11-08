@@ -1,5 +1,5 @@
 modLoader = "javafml"
-loaderVersion = "[1,)"
+loaderVersion = "[52,53)"
 license = "MIT"
 
 [[mods]]
@@ -8,3 +8,10 @@ version = "1.0.0"
 displayName = "Legacy Hello"
 description = "Vibe bridge integration fixture using legacy lifecycle handlers."
 authors = "Vibe Tests"
+
+[[dependencies.legacy_hello]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.21.1,1.22)"
+ordering = "NONE"
+side = "BOTH"

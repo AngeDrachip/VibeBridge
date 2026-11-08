@@ -10,6 +10,7 @@ pub mod config;
 pub mod error;
 pub mod ids;
 pub mod metadata;
+pub mod profile;
 pub mod version;
 
 pub use analysis::{
@@ -19,3 +20,7 @@ pub use analysis::{
 pub use error::{Result, VibeError};
 pub use ids::{ModId, ResourceLocation};
 pub use metadata::{Dependency, LoaderKind, MetadataSource, ModFileMetadata, ModMetadata, ModSide};
+pub use profile::{
+    ModRequirements, Profile, ProfileCandidate, ProfileMatrix, ProfileResolution, ProfileStatus,
+    ResolutionStatus, EMBEDDED_PROFILES,
+};
