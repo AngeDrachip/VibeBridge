@@ -21,7 +21,7 @@ use vibe_core::metadata::ModSide;
 use vibe_core::profile::{ModRequirements, ProfileMatrix, ProfileResolution, ResolutionStatus};
 use vibe_core::{CompatDatabase, CompatStatus, Verdict};
 use vibe_horizon::{
-    export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
+    connect, export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
 };
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
 use vibe_registry::plan_for_side_with_profile;
@@ -153,6 +153,8 @@ struct HorizonArgs {
 enum HorizonCommand {
     /// Locate horizon-ctl and ask it whether a game is reachable.
     Probe(ProbeArgs),
+    /// Connect to a running Horizon instance and verify it.
+    Connect(ConnectArgs),
     /// Export a jar's assets/data as a Horizon .hmod content bundle.
     Export(ExportArgs),
     /// Check a .hmod against the Horizon rules Vibe can verify.
@@ -163,6 +165,13 @@ enum HorizonCommand {
 
 #[derive(Args)]
 struct ProbeArgs {
+    #[arg(long)]
+    ctl: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct ConnectArgs {
+    /// horizon-ctl executable or installation folder. Discovered when omitted.
     #[arg(long)]
     ctl: Option<PathBuf>,
 }
@@ -335,6 +344,7 @@ fn execute(cli: Cli) -> Result<u8> {
         Command::Profiles(args) => profiles(args, json),
         Command::Horizon(args) => match args.command {
             HorizonCommand::Probe(args) => horizon_probe(args, json),
+            HorizonCommand::Connect(args) => horizon_connect(args, json),
             HorizonCommand::Export(args) => horizon_export(args, json),
             HorizonCommand::Validate(args) => horizon_validate(args, json),
             HorizonCommand::Install(args) => horizon_install(args, json),
@@ -1301,6 +1311,52 @@ fn horizon_probe(args: ProbeArgs, json: bool) -> Result<u8> {
         }
     }
     Ok(if result.ctl.is_some() { 0 } else { 1 })
+}
+
+fn horizon_connect(args: ConnectArgs, json: bool) -> Result<u8> {
+    let connection = connect(args.ctl.as_deref())?;
+    if json {
+        print_json(&connection)?;
+    } else {
+        println!("horizon-ctl: {}", connection.ctl.display());
+        if let Some(tag) = &connection.install_version {
+            println!("  Horizon install: {tag}");
+        }
+        println!("  content API: {}", connection.content_api);
+        println!(
+            "  game: {}",
+            if connection.game_reachable {
+                "reachable"
+            } else {
+                "not reachable"
+            }
+        );
+        if let Some(version) = &connection.game_version {
+            println!("  Minecraft: {version}");
+        }
+        if let Some(screen) = &connection.screen {
+            println!("  screen: {screen}");
+        }
+        if let Some(world) = &connection.world {
+            println!("  world: {world}");
+        }
+        if let Some(player) = &connection.player {
+            println!("  player: {player}");
+        }
+        for check in &connection.checks {
+            println!(
+                "  [{}] {}: {}",
+                if check.ok { "ok" } else { "FAIL" },
+                check.name,
+                check.detail
+            );
+        }
+        for note in &connection.notes {
+            println!("  note: {note}");
+        }
+        println!("  ready: {}", if connection.ready() { "yes" } else { "no" });
+    }
+    Ok(if connection.ready() { 0 } else { 1 })
 }
 
 fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {

@@ -5,6 +5,10 @@
 //!
 //! * [`probe`] locates `horizon-ctl` and asks it for its help text and game
 //!   state. It never speaks an undocumented protocol.
+//! * [`connect`] verifies a live Horizon instance: the control socket answers,
+//!   the player has spawned, chunks are loaded, and the world's Minecraft
+//!   version matches the version Horizon targets. Every check is reported
+//!   separately so a failure says what is missing.
 //! * [`export_content`] copies a Forge jar's resources into a content mod
 //!   (`.hmod`) bundle: a zip holding `horizon-mod.toml`, `assets/` and `data/`.
 //!   The source jar is opened read-only and is never modified.
@@ -74,8 +78,11 @@ pub struct HorizonProbe {
     pub notes: Vec<String>,
 }
 
+/// The Minecraft: Java Edition version Horizon v0.2.x targets.
+pub const HORIZON_GAME_VERSION: &str = "26.3";
+
 /// Locate `horizon-ctl` from an explicit path, environment variables, `PATH`,
-/// or a few conventional install folders.
+/// a Horizon launcher installation, or a few conventional install folders.
 pub fn locate_ctl(preferred: Option<&Path>) -> Option<PathBuf> {
     if let Some(path) = preferred {
         return resolve_executable(path);
@@ -96,6 +103,9 @@ pub fn locate_ctl(preferred: Option<&Path>) -> Option<PathBuf> {
                 return Some(candidate);
             }
         }
+    }
+    if let Some(path) = launcher_ctl() {
+        return Some(path);
     }
     let mut roots = Vec::new();
     if let Ok(local) = std::env::var("LOCALAPPDATA") {
@@ -120,6 +130,88 @@ pub fn locate_ctl(preferred: Option<&Path>) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// Find `horizon-ctl` inside a Horizon launcher installation.
+///
+/// The launcher keeps each release under `<launcher-root>/versions/<tag>/`.
+/// Its `settings.json` names the selected version, which wins; otherwise the
+/// newest version folder that actually holds `horizon-ctl` is used.
+fn launcher_ctl() -> Option<PathBuf> {
+    let mut roots = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        roots.push(PathBuf::from(appdata).join("horizon-launcher"));
+    }
+    if let Ok(local) = std::env::var("LOCALAPPDATA") {
+        roots.push(PathBuf::from(local).join("horizon-launcher"));
+    }
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        roots.push(PathBuf::from(home.clone()).join(".horizon-launcher"));
+        roots.push(
+            PathBuf::from(home)
+                .join(".local")
+                .join("share")
+                .join("horizon-launcher"),
+        );
+    }
+    roots.into_iter().find_map(|root| launcher_ctl_in(&root))
+}
+
+/// Discover `horizon-ctl` under one launcher root. Kept separate so tests can
+/// point at a temporary directory.
+fn launcher_ctl_in(launcher_root: &Path) -> Option<PathBuf> {
+    let versions = launcher_root.join("versions");
+    if !versions.is_dir() {
+        return None;
+    }
+    let selected = std::fs::read_to_string(launcher_root.join("settings.json"))
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+        .and_then(|value| {
+            value
+                .get("selected_version")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        });
+    if let Some(tag) = selected {
+        for name in executable_names("horizon-ctl") {
+            let candidate = versions.join(&tag).join(name);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+    }
+
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let entries = std::fs::read_dir(&versions).ok()?;
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        for name in executable_names("horizon-ctl") {
+            let candidate = dir.join(name);
+            if candidate.is_file() {
+                let modified = candidate
+                    .metadata()
+                    .and_then(|metadata| metadata.modified())
+                    .unwrap_or(std::time::UNIX_EPOCH);
+                found.push((modified, candidate));
+            }
+        }
+    }
+    found.sort_by(|left, right| right.0.cmp(&left.0));
+    found.into_iter().map(|(_, path)| path).next()
+}
+
+/// The launcher release tag that owns `horizon-ctl`, when it lives under a
+/// `versions/<tag>/` folder.
+fn install_tag_for(ctl: &Path) -> Option<String> {
+    let tag = ctl.parent()?.file_name()?.to_str()?;
+    if tag.is_empty() || tag == "versions" {
+        return None;
+    }
+    Some(tag.to_string())
 }
 
 /// Probe `horizon-ctl` without requiring a running game.
@@ -202,6 +294,242 @@ pub fn probe(preferred: Option<&Path>) -> HorizonProbe {
             .push(format!("could not run {} state: {error}", ctl.display())),
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// Live connection
+// ---------------------------------------------------------------------------
+
+/// One verified property of a live Horizon connection.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConnectionCheck {
+    /// Stable check name, for scripts.
+    pub name: String,
+    pub ok: bool,
+    /// What was observed, including the value that failed.
+    pub detail: String,
+}
+
+/// A live Horizon instance reached through `horizon-ctl`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HorizonConnection {
+    /// The `horizon-ctl` used for every check.
+    pub ctl: PathBuf,
+    /// Launcher release tag that owns `horizon-ctl`, when known.
+    pub install_version: Option<String>,
+    /// Whether the control socket answered `horizon-ctl state`.
+    pub game_reachable: bool,
+    pub game_state: Option<serde_json::Value>,
+    pub game_status: Option<serde_json::Value>,
+    pub worlds: Option<serde_json::Value>,
+    /// Minecraft version reported by the open world, when one is open.
+    pub game_version: Option<String>,
+    pub screen: Option<String>,
+    pub player: Option<String>,
+    pub world: Option<String>,
+    /// Horizon content API this build exports (`0.2`).
+    pub content_api: String,
+    pub checks: Vec<ConnectionCheck>,
+    /// Boundaries and diagnostics. Never a compatibility claim.
+    pub notes: Vec<String>,
+}
+
+impl HorizonConnection {
+    /// True when the game answered, a player is in a world, and the world's
+    /// Minecraft version is the one Horizon targets.
+    pub fn ready(&self) -> bool {
+        self.game_reachable && self.checks.iter().all(|check| check.ok)
+    }
+}
+
+/// Connect to a running Horizon instance and verify it.
+///
+/// Returns an error only when `horizon-ctl` cannot be found or run at all.
+/// A game that is not running is a valid connection report with
+/// `game_reachable == false` and a check that says why.
+pub fn connect(preferred: Option<&Path>) -> Result<HorizonConnection> {
+    let ctl = locate_ctl(preferred).ok_or_else(|| {
+        VibeError::Horizon(
+            "horizon-ctl was not found. Install Horizon, put horizon-ctl on PATH, or pass --ctl."
+                .into(),
+        )
+    })?;
+    let install_version = install_tag_for(&ctl);
+    let mut checks = vec![ConnectionCheck {
+        name: "horizon_ctl".into(),
+        ok: true,
+        detail: ctl.display().to_string(),
+    }];
+    let mut notes = Vec::new();
+
+    let state_output = run_ctl(&ctl, &["state"])?;
+    let state_value = json_output(&state_output);
+    let game_reachable = state_output.status.success();
+    let game_state = if game_reachable {
+        checks.push(ConnectionCheck {
+            name: "control_socket".into(),
+            ok: true,
+            detail: "the running game answered horizon-ctl state".into(),
+        });
+        state_value
+    } else {
+        let kind = state_value
+            .as_ref()
+            .and_then(|value| value.get("kind"))
+            .and_then(serde_json::Value::as_str);
+        let message = state_value
+            .as_ref()
+            .and_then(|value| value.get("error"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                let text = format!(
+                    "{}{}",
+                    String::from_utf8_lossy(&state_output.stdout),
+                    String::from_utf8_lossy(&state_output.stderr)
+                );
+                text.trim().to_string()
+            });
+        checks.push(ConnectionCheck {
+            name: "control_socket".into(),
+            ok: false,
+            detail: match kind {
+                Some(kind) => format!("{kind}: {message}"),
+                None => message,
+            },
+        });
+        notes.push(
+            "Start the game with agent control (`horizon-ctl launch ... --wait`) or turn on Options > Horizon Settings > AI Agent in a running game."
+                .into(),
+        );
+        None
+    };
+
+    let game_status = if game_reachable {
+        json_output(&run_ctl(&ctl, &["status"])?)
+    } else {
+        None
+    };
+    let worlds = if game_reachable {
+        json_output(&run_ctl(&ctl, &["worlds"])?)
+    } else {
+        None
+    };
+
+    let screen = game_state
+        .as_ref()
+        .and_then(|value| value.get("screen"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+    let player = game_state
+        .as_ref()
+        .and_then(|value| value.get("player"))
+        .and_then(|player| player.get("position"))
+        .map(|position| format!("at {position}"));
+    let world = game_state
+        .as_ref()
+        .and_then(|value| value.get("world"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    let game_version = worlds
+        .as_ref()
+        .and_then(|value| value.get("worlds"))
+        .and_then(serde_json::Value::as_array)
+        .and_then(|worlds| worlds.first())
+        .and_then(|world| world.get("version"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string);
+
+    if game_reachable {
+        let playing = screen.as_deref() == Some("playing");
+        checks.push(ConnectionCheck {
+            name: "player_in_world".into(),
+            ok: playing,
+            detail: match (&screen, &world) {
+                (Some(screen), Some(world)) => format!("screen {screen:?}, world {world:?}"),
+                (Some(screen), None) => format!("screen {screen:?}"),
+                _ => "no screen reported".into(),
+            },
+        });
+
+        let pending = game_status
+            .as_ref()
+            .and_then(|value| value.get("pending_chunks"))
+            .and_then(serde_json::Value::as_u64);
+        checks.push(ConnectionCheck {
+            name: "chunks_loaded".into(),
+            ok: pending == Some(0),
+            detail: match pending {
+                Some(0) => "no chunks pending".into(),
+                Some(count) => format!("{count} chunk(s) still pending"),
+                None => "the game did not report pending chunks".into(),
+            },
+        });
+
+        checks.push(ConnectionCheck {
+            name: "game_version".into(),
+            ok: game_version.as_deref() == Some(HORIZON_GAME_VERSION),
+            detail: match &game_version {
+                Some(version) if version == HORIZON_GAME_VERSION => {
+                    format!("Minecraft {version}")
+                }
+                Some(version) => {
+                    format!("Minecraft {version}; Horizon v0.2.x targets {HORIZON_GAME_VERSION}")
+                }
+                None => "no open world reported a Minecraft version".into(),
+            },
+        });
+    }
+
+    checks.push(ConnectionCheck {
+        name: "content_api".into(),
+        ok: true,
+        detail: format!(
+            "Vibe exports Horizon content API {CONTENT_API}; Horizon does not run Java mods"
+        ),
+    });
+
+    if !game_reachable {
+        notes.push(
+            "A connection needs a running Horizon client under agent control; installation and content export work without one."
+                .into(),
+        );
+    }
+
+    Ok(HorizonConnection {
+        ctl,
+        install_version,
+        game_reachable,
+        game_state,
+        game_status,
+        worlds,
+        game_version,
+        screen,
+        player,
+        world,
+        content_api: CONTENT_API.to_string(),
+        checks,
+        notes,
+    })
+}
+
+fn run_ctl(ctl: &Path, args: &[&str]) -> Result<std::process::Output> {
+    std::process::Command::new(ctl)
+        .args(args)
+        .output()
+        .map_err(|error| {
+            VibeError::Horizon(format!(
+                "could not run {} {}: {error}",
+                ctl.display(),
+                args.join(" ")
+            ))
+        })
+}
+
+fn json_output(output: &std::process::Output) -> Option<serde_json::Value> {
+    let text = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(text.trim()).ok()
 }
 
 // ---------------------------------------------------------------------------
@@ -1896,5 +2224,47 @@ typo = "refused"
         let missing = temp.path().join("no_such_game");
         let error = install_content_bundle(&valid, &missing, false, true).unwrap_err();
         assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn discovers_ctl_in_a_launcher_install() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("horizon-launcher");
+        let versions = root.join("versions");
+        let old = versions.join("v0.2.50");
+        let new = versions.join("v0.2.97");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join(exe_name("horizon-ctl")), b"").unwrap();
+        std::fs::write(new.join(exe_name("horizon-ctl")), b"").unwrap();
+        std::fs::write(
+            root.join("settings.json"),
+            br#"{"selected_version":"v0.2.97"}"#,
+        )
+        .unwrap();
+
+        let found = launcher_ctl_in(&root).unwrap();
+        assert_eq!(found, new.join(exe_name("horizon-ctl")));
+    }
+
+    #[test]
+    fn launcher_discovery_returns_none_without_a_versions_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(launcher_ctl_in(temp.path()).is_none());
+    }
+
+    #[test]
+    fn install_tag_is_read_from_the_version_folder() {
+        assert_eq!(
+            install_tag_for(Path::new("/x/versions/v0.2.97/horizon-ctl")).as_deref(),
+            Some("v0.2.97")
+        );
+    }
+
+    #[test]
+    fn connect_reports_a_missing_ctl_instead_of_inventing_a_connection() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = connect(Some(&temp.path().join("no_such_ctl"))).unwrap_err();
+        assert!(error.to_string().contains("horizon-ctl"), "{error}");
     }
 }
