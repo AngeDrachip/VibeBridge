@@ -509,9 +509,19 @@ mod tests {
         let ids: Vec<&str> = matrix.profiles.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(
             ids,
-            vec!["forge-1.20.1-47", "forge-1.21.1-52", "forge-26.3-66"]
+            vec![
+                "forge-1.12.2-14",
+                "forge-1.16.5-36",
+                "forge-1.18.2-40",
+                "forge-1.19.2-43",
+                "forge-1.20.1-47",
+                "forge-1.20.4-49",
+                "forge-1.21.1-52",
+                "forge-26.3-66"
+            ]
         );
         assert!(matrix.get("forge-1.20.1-47").unwrap().allows_runtime());
+        assert!(!matrix.get("forge-1.16.5-36").unwrap().allows_runtime());
         assert!(!matrix.get("forge-26.3-66").unwrap().allows_runtime());
     }
 
@@ -542,13 +552,30 @@ mod tests {
     #[test]
     fn an_unsupported_target_reports_the_declaration() {
         let matrix = ProfileMatrix::embedded().unwrap();
-        let resolution = matrix.resolve(&requirements(Some("[1.12,1.13)"), None), None);
+        let resolution = matrix.resolve(&requirements(Some("[1.14,1.15)"), None), None);
         assert_eq!(resolution.status, ResolutionStatus::Unsupported);
         assert!(resolution.reasons[0].contains("no supported"));
         assert!(resolution
             .reasons
             .iter()
-            .any(|reason| reason.contains("1.12,1.13")));
+            .any(|reason| reason.contains("1.14,1.15")));
+    }
+
+    #[test]
+    fn metadata_only_targets_resolve_without_a_runtime_backend() {
+        let matrix = ProfileMatrix::embedded().unwrap();
+        for (minecraft, loader, id) in [
+            ("[1.12.2,1.12.3)", "[14,15)", "forge-1.12.2-14"),
+            ("[1.16.5,1.16.6)", "[36,37)", "forge-1.16.5-36"),
+            ("[1.18.2,1.18.3)", "[40,41)", "forge-1.18.2-40"),
+            ("[1.19.2,1.19.3)", "[43,44)", "forge-1.19.2-43"),
+            ("[1.20.4,1.20.5)", "[49,50)", "forge-1.20.4-49"),
+        ] {
+            let resolution = matrix.resolve(&requirements(Some(minecraft), Some(loader)), None);
+            assert_eq!(resolution.status, ResolutionStatus::Matched, "{id}");
+            assert_eq!(resolution.selected.as_deref(), Some(id));
+            assert!(!matrix.get(id).unwrap().allows_runtime(), "{id}");
+        }
     }
 
     #[test]
@@ -636,7 +663,8 @@ versionRange = "[1.21.1,1.22)"
         let resolution = ProfileMatrix::embedded()
             .unwrap()
             .resolve(&requirements, None);
-        assert_eq!(resolution.status, ResolutionStatus::Unsupported);
+        assert_eq!(resolution.status, ResolutionStatus::Matched);
+        assert_eq!(resolution.selected.as_deref(), Some("forge-1.12.2-14"));
     }
 
     #[test]

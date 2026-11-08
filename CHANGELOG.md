@@ -6,6 +6,63 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-08
+
+### Added
+
+- A functional Forge registry subset: `DeferredRegister`, `RegistryObject`,
+  `RegisterEvent`, `ForgeRegistries`, `IForgeRegistry`, `VibeRegistry`, and
+  `VibeRegistryManager`. Entries live in ordered in-memory registries and are
+  reported by `runtime.registry_snapshot`.
+- A real Minecraft data subset: `ResourceLocation`, `ResourceKey`, `Registry`,
+  `Registries`, `Component`, `Item`/`Item.Properties`, `ItemStack`,
+  `Block`/`Block.Properties`, `BlockBehaviour`/`Properties`, and
+  `CreativeModeTab`/`Builder`. These are data types with real behavior, not
+  no-op placeholders.
+- A `register` lifecycle phase that posts `RegisterEvent` per supported registry
+  and materializes deferred entries.
+- Nested-JAR loading from `META-INF/jarjar/` and `META-INF/jars/`: archives are
+  extracted to a temporary directory, added to the owning mod's class loader,
+  and removed after the session.
+- Analysis treats nested-archive classes as provided, so bundled libraries are
+  no longer misreported as external.
+- Eight embedded compatibility profiles: `forge-1.12.2-14`, `forge-1.16.5-36`,
+  `forge-1.18.2-40`, `forge-1.19.2-43`, `forge-1.20.1-47`, `forge-1.20.4-49`,
+  `forge-1.21.1-52`, and `forge-26.3-66`.
+- An embedded compatibility database (`crates/vibe-core/data/compat.toml`) with
+  evidence for every entry and statuses `FULL`, `HIGH`, `PARTIAL`,
+  `CONTENT_ONLY`, `BLOCKED`, and `UNKNOWN`.
+- CLI commands: `vibe setup`, `vibe mods` (scan, versions, profiles, missing
+  dependencies, enable/disable), `vibe logs`, `vibe bench`, and `vibe compat`.
+- `vibe run` now writes `logs/vibe-run-<session>.log`,
+  `logs/vibe-run-<session>.json`, and `logs/vibe-crash-<session>.log` on failure.
+- Required documentation: `INSTALL.md`, `docs/INSTALLATION.md`,
+  `docs/TROUBLESHOOTING.md`, `docs/COMPATIBILITY.md`, and
+  `docs/FIRST_LAUNCH.md`.
+- Fixtures `registry-demo` and `nested-demo`, plus integration tests that prove
+  registry materialization and nested-JAR class loading.
+
+### Changed
+
+- Only unsupported `net.minecraft.*` classes block a mod; the implemented
+  Minecraft subset is whitelisted during analysis.
+- `blocked-unsupported-forge` now references genuinely unsupported
+  `net.minecraftforge.common.capabilities.Capability`.
+- Vibe and the Java runtime report version `0.4.0`.
+
+### Known limitations
+
+- Only `forge-1.20.1-47` and `forge-1.21.1-52` have a runtime backend. All other
+  profiles are metadata-only.
+- Registries are in-memory only. There is no Minecraft world, so items, blocks,
+  and creative tabs cannot be observed in game.
+- Mixin, coremods, access transformers, capabilities, networking, entities, and
+  rendering are not implemented.
+- No third-party Forge mod has been validated. The compatibility database marks
+  representative mods `UNKNOWN`.
+- Vibe 1.0 Beta is not released because its real-mod, in-game, and clean-install
+  requirements have not been met.
+
 ## [0.3.0] - 2026-11-08
 
 ### Added

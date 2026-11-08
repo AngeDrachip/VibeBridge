@@ -16,7 +16,7 @@ modifying them, decides honestly whether it can execute their entrypoints,
 runs the supported lifecycle in a real JVM, and can carry data-only content into
 Horizon through Horizon's documented content-mod format.
 
-Current release: **0.3.0** (independent Minecraft/Forge compatibility profiles).
+Current release: **0.4.0** (functional registry subset, nested JARs, multi-version profiles, setup/logging/benchmark tooling).
 
 ## What Vibe does
 
@@ -37,6 +37,13 @@ Current release: **0.3.0** (independent Minecraft/Forge compatibility profiles).
   `@Mod` construction, Forge-shaped event buses, legacy `@Mod.EventHandler`
   callbacks, modern `@SubscribeEvent` listeners, sided setup filtering, and a
   lifecycle summary.
+- **Provides a functional registry subset**: ordered in-memory item, block, and
+  creative-tab registries, `DeferredRegister`, `RegistryObject`, `RegisterEvent`,
+  `ResourceLocation`, `Item`, `ItemStack`, `Block`, and `CreativeModeTab`. These
+  are real data structures that mods can read back, not no-op placeholders.
+- **Loads nested JARs** from `META-INF/jarjar/` and `META-INF/jars/` by
+  extracting them to a temporary directory and adding them to the owning mod's
+  class loader.
 - **Exports content** from a jar to a Horizon `.hmod` bundle (manifest,
   `assets/`, `data/`) following Horizon's documented content format. Java code,
   code-registered content, Mixins, and coremods are not carried.
@@ -45,13 +52,17 @@ Current release: **0.3.0** (independent Minecraft/Forge compatibility profiles).
 
 ## What Vibe does not do
 
-- It does not provide Minecraft classes (`net.minecraft.*`). Any mod that
-  references them is blocked.
-- It does not implement Mixin bytecode transformation, coremods, access
-  transformers, or nested-jar loading.
+- It provides only a small, functional subset of Minecraft classes. Unsupported
+  `net.minecraft.*` references (for example `net.minecraft.world.level.Level`)
+  still block a mod.
+- It does not implement Mixin bytecode transformation, coremods, or access
+  transformers.
+- It extracts nested JARs but does not resolve their declared dependency
+  version ranges.
 - It does not extract or load native libraries.
-- It does not implement the full Forge API, Forge registries, capabilities,
-  networking, data generation, or resource reloading.
+- It does not implement the full Forge API, capabilities, networking, data
+  generation, world access, entities, block entities, menus, recipes, or
+  resource reloading.
 - It does not convert Minecraft pack formats during export.
 - It does not patch Horizon, speak an undocumented Horizon protocol, or claim
   that Horizon can execute Java.
@@ -155,6 +166,11 @@ Every command accepts `--json` for machine-readable output.
 | `vibe plan <paths...>` | Dependency/namespace plan without executing code; `--side CLIENT\|SERVER` plans one side; `--profile <id>` requires one target. | `0` no inspection errors, `1` errors, `5` requested profile not satisfied |
 | `vibe run <paths...>` | Start the JVM sidecar, load runnable jars under one profile, run the lifecycle. | `0` lifecycle ok, `3` nothing runnable, `4` runtime failure, `5` profile conflict or no runtime backend |
 | `vibe profiles` | List the embedded Minecraft/Forge compatibility profiles. `--runtime-only` hides metadata-only targets. | `0` success |
+| `vibe setup` | Create `mods/`, `mods-disabled/`, and `logs/`, and report detected Java/runtime/Horizon. | `0` Java and runtime found, `1` missing prerequisite |
+| `vibe mods` | Scan enabled and disabled jars, show detected versions/profile/verdict/missing dependencies, and move jars with `--enable` / `--disable`. | `0` no inspection errors, `1` errors |
+| `vibe logs` | List run logs and print the tail of the newest one. | `0` success |
+| `vibe bench` | Measure JVM startup, mod load, lifecycle, and total time over repeated runs. | `0` all runs ok, `3` nothing runnable, `4` runtime failure, `5` profile conflict |
+| `vibe compat` | Show the embedded compatibility database and the evidence behind each status. | `0` success |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
@@ -201,7 +217,12 @@ binary from `crates/vibe-core/data/profiles.toml`.
 
 | Profile | Minecraft | Forge | Java | Status |
 | --- | --- | --- | --- | --- |
+| `forge-1.12.2-14` | 1.12.2 | 14.x | 8 | `metadata-only` |
+| `forge-1.16.5-36` | 1.16.5 | 36.x | 8 | `metadata-only` |
+| `forge-1.18.2-40` | 1.18.2 | 40.x | 17 | `metadata-only` |
+| `forge-1.19.2-43` | 1.19.2 | 43.x | 17 | `metadata-only` |
 | `forge-1.20.1-47` | 1.20.1 | 47.x | 17 | `experimental-subset` |
+| `forge-1.20.4-49` | 1.20.4 | 49.x | 17 | `metadata-only` |
 | `forge-1.21.1-52` | 1.21.1 | 52.x | 21 | `experimental-subset` |
 | `forge-26.3-66` | 26.3 | 66.x | 21 | `metadata-only` |
 
@@ -236,7 +257,7 @@ the Java sidecar. The sidecar rejects a profile or backend it does not provide.
 | --- | --- |
 | `runnable-subset` | No hard blocker was found, and Vibe's Forge API subset can construct the declared `@Mod` entrypoint. This is **not** a promise of general Forge compatibility. |
 | `content-only` | There is no Java entrypoint to execute (for example a low-code or resource pack style mod). Assets/data may still be exportable. |
-| `blocked` | At least one hard blocker exists (Minecraft classes, unsupported Forge API, Mixin, coremod, access transformer, missing entrypoint, unsupported loader, or Java version mismatch). |
+| `blocked` | At least one hard blocker exists (unsupported Minecraft classes, unsupported Forge API, Mixin, coremod, access transformer, missing entrypoint, unsupported loader, or Java version mismatch). |
 | `unknown` | The archive is not recognisably a Forge mod. |
 
 Inspection never executes mod code. `vibe run` only sends `runnable-subset`
@@ -302,7 +323,7 @@ crates/
 java/
   vibe-forge-api/ clean-room Forge-shaped API subset used by mods
   vibe-runtime/   Java bridge process and mod lifecycle manager
-  test-mods/      two compiled integration fixtures
+  test-mods/      compiled integration fixtures, including registry and nested-JAR cases
 ```
 
 ## Development
@@ -316,13 +337,14 @@ cargo test --workspace
 ```
 
 `VIBE_REQUIRE_JAVA_TESTS=1` turns missing Java or missing fixture jars into test
-failures instead of skips. The integration tests start a real JVM, load both
-runnable fixtures, run the lifecycle, and export the fixture resources as a
-Horizon content bundle. A second suite inspects compiled blocked-case jars and
-asserts one hard blocker per fixture (Minecraft classes, unsupported Forge API,
-external library, Mixin, access transformer, coremod, missing entrypoint,
-unsupported loader) plus the nested-jar warning. The CI workflow is configured
-to run the same checks on Linux and Windows with JDK 17.
+failures instead of skips. The integration tests start a real JVM, load the
+runnable fixtures, run the lifecycle, materialize real registries, load a nested
+JAR dependency, and export fixture resources as a Horizon content bundle. A
+second suite inspects compiled blocked-case jars and asserts one hard blocker per
+fixture (unsupported Minecraft classes, unsupported Forge API, external library,
+Mixin, access transformer, coremod, missing entrypoint, unsupported loader) plus
+the nested-jar warning. The CI workflow is configured to run the same checks on
+Linux and Windows with JDK 17.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before adding API surface. The project is
 clean-room: do not copy Forge, Minecraft, or Horizon source into this repository.

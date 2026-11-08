@@ -18,6 +18,7 @@ use crate::manifest::{parse_manifest, Manifest};
 
 const MAX_CLASS_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_METADATA_BYTES: u64 = 8 * 1024 * 1024;
+const MAX_NESTED_JAR_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JarInspection {
@@ -166,8 +167,29 @@ pub fn inspect_jar(path: &Path, runtime_java_release: Option<u16>) -> Result<Jar
             }
             continue;
         }
-        if name.starts_with("META-INF/jarjar/") && lower.ends_with(".jar") {
+        if (name.starts_with("META-INF/jarjar/") || name.starts_with("META-INF/jars/"))
+            && lower.ends_with(".jar")
+        {
             nested_jars.insert(name);
+            // Nested archives are real dependencies at runtime, so classes
+            // inside them must count as provided. Otherwise every reference to
+            // a bundled library would be misreported as external.
+            if let Ok(bytes) = read_limited(&mut entry, MAX_NESTED_JAR_BYTES) {
+                if let Ok(mut nested) = ZipArchive::new(std::io::Cursor::new(bytes)) {
+                    for nested_index in 0..nested.len() {
+                        let Ok(nested_entry) = nested.by_index(nested_index) else {
+                            continue;
+                        };
+                        let nested_name = nested_entry.name().to_string();
+                        if !nested_name.ends_with(".class") || is_ignored_class(&nested_name) {
+                            continue;
+                        }
+                        if let Some(stem) = nested_name.strip_suffix(".class") {
+                            provided_classes.insert(stem.replace('/', "."));
+                        }
+                    }
+                }
+            }
             continue;
         }
         if name.starts_with("META-INF/services/") {

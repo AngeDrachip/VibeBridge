@@ -139,6 +139,145 @@ fn runs_real_compiled_forge_shaped_fixtures() {
 }
 
 #[test]
+fn registry_demo_materializes_real_registries() {
+    let root = repo_root();
+    let jar = root
+        .join("java")
+        .join("test-mods")
+        .join("build")
+        .join("registry-demo.jar");
+    let runtime = default_runtime_path(&root);
+    if runtime.is_none() || !jar.is_file() {
+        let message = "registry fixture or runtime missing; run java/build.ps1 and \
+                       java/test-mods/build.ps1 first";
+        if required() {
+            panic!("{message}");
+        }
+        eprintln!("skipping: {message}");
+        return;
+    }
+
+    let inspection = inspect_jar(&jar, None).expect("registry fixture must inspect");
+    assert_eq!(
+        inspection.report.verdict,
+        Verdict::RunnableSubset,
+        "{:?}",
+        inspection.report.blockers
+    );
+
+    let java = locate_java(None).expect("Java 17+ is required for the bridge test");
+    let mut options = RuntimeOptions::new(java, runtime.unwrap());
+    options.side = "SERVER".into();
+    options.start_timeout = Duration::from_secs(30);
+    options.request_timeout = Duration::from_secs(30);
+
+    let mut client = RuntimeClient::spawn(options).expect("runtime should start");
+    let load = client
+        .load_mods(std::slice::from_ref(&jar), "SERVER")
+        .expect("mods.load");
+    assert_eq!(load["ok"], true, "load failed: {load}");
+    let lifecycle = client.start_lifecycle().expect("lifecycle.start");
+    assert_eq!(lifecycle["ok"], true, "lifecycle failed: {lifecycle}");
+
+    let snapshot = client.registry_snapshot().expect("registry.snapshot");
+    let registries = snapshot["registries"]
+        .as_array()
+        .expect("registry list should be present");
+    let entries = |name: &str| -> Vec<String> {
+        registries
+            .iter()
+            .find(|registry| registry["registry"] == name)
+            .and_then(|registry| registry["entries"].as_array())
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter_map(|entry| entry.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    assert!(
+        entries("minecraft:item").contains(&"registry_demo:gem".to_string()),
+        "item registry missing gem: {snapshot}"
+    );
+    assert!(
+        entries("minecraft:block").contains(&"registry_demo:gem_block".to_string()),
+        "block registry missing gem_block: {snapshot}"
+    );
+    assert!(
+        entries("minecraft:creative_mode_tab").contains(&"registry_demo:registry_demo".to_string()),
+        "creative tab registry missing tab: {snapshot}"
+    );
+
+    client.shutdown().expect("clean shutdown");
+}
+
+#[test]
+fn nested_demo_loads_bundled_library() {
+    let root = repo_root();
+    let jar = root
+        .join("java")
+        .join("test-mods")
+        .join("build")
+        .join("nested-demo.jar");
+    let runtime = default_runtime_path(&root);
+    if runtime.is_none() || !jar.is_file() {
+        let message = "nested fixture or runtime missing; run java/build.ps1 and \
+                       java/test-mods/build.ps1 first";
+        if required() {
+            panic!("{message}");
+        }
+        eprintln!("skipping: {message}");
+        return;
+    }
+
+    let inspection = inspect_jar(&jar, None).expect("nested fixture must inspect");
+    assert_eq!(
+        inspection.report.verdict,
+        Verdict::RunnableSubset,
+        "{:?}",
+        inspection.report.blockers
+    );
+    assert!(
+        inspection.report.external_classes.is_empty(),
+        "nested classes must count as provided: {:?}",
+        inspection.report.external_classes
+    );
+
+    let java = locate_java(None).expect("Java 17+ is required for the bridge test");
+    let mut options = RuntimeOptions::new(java, runtime.unwrap());
+    options.side = "SERVER".into();
+    options.start_timeout = Duration::from_secs(30);
+    options.request_timeout = Duration::from_secs(30);
+
+    let mut client = RuntimeClient::spawn(options).expect("runtime should start");
+    let load = client
+        .load_mods(std::slice::from_ref(&jar), "SERVER")
+        .expect("mods.load");
+    assert_eq!(load["ok"], true, "load failed: {load}");
+    let jars = load["jars"].as_array().expect("jar list");
+    let nested: Vec<&str> = jars
+        .iter()
+        .flat_map(|jar| {
+            jar["nested_jars_loaded"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|name| name.as_str())
+        })
+        .collect();
+    assert!(
+        nested.contains(&"META-INF/jarjar/nested-lib.jar"),
+        "nested jar was not loaded: {load}"
+    );
+
+    let lifecycle = client.start_lifecycle().expect("lifecycle.start");
+    assert_eq!(lifecycle["ok"], true, "lifecycle failed: {lifecycle}");
+
+    client.shutdown().expect("clean shutdown");
+}
+
+#[test]
 fn exports_fixture_resources_as_horizon_content() {
     let jar = repo_root()
         .join("java")

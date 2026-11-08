@@ -1,10 +1,12 @@
 # Compatibility
 
-This document describes exactly what Vibe 0.3.0 implements and what it does not.
+This document describes exactly what Vibe 0.4.0 implements and what it does not.
 It is deliberately narrower than "Forge compatibility". A `runnable-subset`
 verdict means Vibe found no hard blocker and can construct the mod's entrypoint
 against the API listed here; it does not mean the mod will behave like it does
 in Minecraft.
+
+For the shorter, user-facing view, see [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 
 Last updated: 2026-11-08.
 
@@ -28,7 +30,12 @@ backend. The embedded matrix is in `crates/vibe-core/data/profiles.toml`.
 
 | Profile | Minecraft | Forge | Java | Status | Runtime backend |
 | --- | --- | --- | --- | --- | --- |
+| `forge-1.12.2-14` | 1.12.2 | 14.x | 8 | `metadata-only` | none |
+| `forge-1.16.5-36` | 1.16.5 | 36.x | 8 | `metadata-only` | none |
+| `forge-1.18.2-40` | 1.18.2 | 40.x | 17 | `metadata-only` | none |
+| `forge-1.19.2-43` | 1.19.2 | 43.x | 17 | `metadata-only` | none |
 | `forge-1.20.1-47` | 1.20.1 | 47.x | 17 | `experimental-subset` | `forge-api-subset-v1` |
+| `forge-1.20.4-49` | 1.20.4 | 49.x | 17 | `metadata-only` | none |
 | `forge-1.21.1-52` | 1.21.1 | 52.x | 21 | `experimental-subset` | `forge-api-subset-v1` |
 | `forge-26.3-66` | 26.3 | 66.x | 21 | `metadata-only` | none |
 
@@ -47,8 +54,9 @@ backend. The embedded matrix is in `crates/vibe-core/data/profiles.toml`.
   declarations. One JVM run uses one profile.
 
 The Java runtime reports `supported_profiles` in its handshake and rejects a
-profile or backend it does not provide. `forge-26.3-66` is intentionally absent
-from that list.
+profile or backend it does not provide. Only the two `experimental-subset`
+profiles are runnable; every `metadata-only` profile is intentionally absent from
+that list.
 
 ## Implemented Forge API
 
@@ -90,7 +98,19 @@ net.minecraftforge.fml.event.lifecycle.FMLLoadCompleteEvent
 net.minecraftforge.fml.event.lifecycle.InterModEnqueueEvent
 net.minecraftforge.fml.event.lifecycle.InterModProcessEvent
 net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext
+net.minecraftforge.registries.DeferredRegister
+net.minecraftforge.registries.ForgeRegistries
+net.minecraftforge.registries.IForgeRegistry
+net.minecraftforge.registries.RegisterEvent
+net.minecraftforge.registries.RegisterEvent$RegisterHelper
+net.minecraftforge.registries.RegistryObject
+net.minecraftforge.registries.VibeRegistry
+net.minecraftforge.registries.VibeRegistryManager
 ```
+
+The registry classes are functional. Entries are stored in ordered in-memory
+maps and are reported by `vibe run` and `runtime.registry_snapshot`. Implemented
+registries: `minecraft:item`, `minecraft:block`, `minecraft:creative_mode_tab`.
 
 The same list is published by the Java runtime in its handshake and
 `runtime.info` response (`supported_forge_api`). It must be kept in sync in:
@@ -101,6 +121,33 @@ The same list is published by the Java runtime in its handshake and
 A small logging shim (`org.apache.logging.log4j.Logger` and `LogManager`) is
 also supplied so common javafml constructors link. It is not a Forge API and is
 not part of the compatibility decision.
+
+## Implemented Minecraft API
+
+Vibe provides a small, real subset of `net.minecraft.*`. A reference to a
+Minecraft class outside this list is still a hard blocker.
+
+```text
+net.minecraft.core.Registry
+net.minecraft.core.registries.Registries
+net.minecraft.network.chat.Component
+net.minecraft.resources.ResourceKey
+net.minecraft.resources.ResourceLocation
+net.minecraft.world.item.CreativeModeTab
+net.minecraft.world.item.CreativeModeTab$Builder
+net.minecraft.world.item.Item
+net.minecraft.world.item.Item$Properties
+net.minecraft.world.item.ItemStack
+net.minecraft.world.level.block.Block
+net.minecraft.world.level.block.Block$Properties
+net.minecraft.world.level.block.state.BlockBehaviour
+net.minecraft.world.level.block.state.BlockBehaviour$Properties
+```
+
+These types hold real data: resource locations validate and compare, item and
+block properties are preserved, stacks hold counts, creative tabs keep their
+title and icon, and registries can be read back. Vibe does not render, tick, or
+save them because there is no Minecraft world.
 
 ## Entrypoints and annotations
 
@@ -161,6 +208,9 @@ construct
 construct_events
   FMLConstructModEvent (mod bus)
   FMLConstructionEvent (legacy handlers)
+register
+  RegisterEvent for minecraft:item, minecraft:block, minecraft:creative_mode_tab (mod bus)
+  VibeRegistryManager.materializeAll()
 common_setup
   FMLCommonSetupEvent (mod bus)
   FMLPreInitializationEvent (legacy handlers)
@@ -182,7 +232,8 @@ complete
 This is not Forge's full mod-loading pipeline. There is no Minecraft game,
 registry freeze, resource reload, server start, network channel setup, or
 data-generation phase. `FMLServerStartingEvent` exists for linkage but is not
-posted.
+posted. Registries are in-memory maps only; they are not connected to Minecraft
+or Horizon and cannot produce in-game items or blocks.
 
 ## Load planning
 
@@ -214,7 +265,7 @@ not reported as a mismatch.
 
 | Blocker | Severity | Meaning |
 | --- | --- | --- |
-| `MinecraftClasses` | error | References `net.minecraft.*` classes Horizon does not provide. |
+| `MinecraftClasses` | error | References `net.minecraft.*` classes outside Vibe's implemented subset. |
 | `UnsupportedForgeApi` | error | References `net.minecraftforge.*` outside the list above. |
 | `MixinTransformer` | error | Declares Mixin configurations. |
 | `AccessTransformer` | error | Declares access transformers. |
@@ -224,7 +275,7 @@ not reported as a mismatch.
 | `UnsupportedLoader` | error | Unknown language loader. |
 | `JavaVersionTooNew` | error | Class file release is newer than the selected runtime. |
 | `JavaVersionTooOld` | error | Selected runtime is older than Java 17. |
-| `NestedJars` | warning | Jar-in-jar entries are reported but not added to the class loader. |
+| `NestedJars` | warning | Jar-in-jar entries are extracted into the mod class loader; nested dependency version ranges are not resolved. |
 | `NativeLibraries` | warning | Native entries are reported but not extracted or loaded. |
 | `ClassLoadError` | warning | Some class files could not be parsed during analysis. |
 | `NoForgeMetadata` | warning | No `mods.toml` / `mcmod.info` found. |
@@ -268,23 +319,24 @@ check.
 
 ## Tested behavior
 
-The automated suite compiles and runs two fixtures against the real shim:
+The automated suite compiles and runs four fixtures against the real shim:
 
 | Fixture | Coverage |
 | --- | --- |
 | `hello-forge` | Modern `(FMLJavaModLoadingContext)` constructor, `ModLoadingContext`, typed `addListener`, reflective `@SubscribeEvent` on the mod bus, custom `PingEvent`, legacy pre-init handler, log4j shim, resources under `hello_forge`. |
 | `legacy-hello` | `@Mod` with legacy lifecycle handlers: construction, pre-init, init, post-init, load-complete; `ModList` cross-check. |
+| `registry-demo` | `DeferredRegister` items, blocks, and creative tabs; `RegistryObject`; `RegisterEvent`; entries materialize in the real in-memory registries. |
+| `nested-demo` | A class that exists only in `META-INF/jarjar/nested-lib.jar` loads and runs from the mod class loader. |
 
-Observed integration result with both fixtures and `--side SERVER`:
+Observed integration result with the fixtures and `--side SERVER`:
 
 ```text
 profile: forge-1.21.1-52 (Minecraft 1.21.1, Forge 52.1.20)
-loaded 2 mod entrypoint(s)
+loaded 4 mod entrypoint(s)
 lifecycle: phase=complete, ok=true
-event records: 9/9 succeeded
 ```
 
-Both fixtures declare Minecraft `[1.21.1,1.22)` and Forge `[52,53)`, so they
+All fixtures declare Minecraft `[1.21.1,1.22)` and Forge `[52,53)`, so they
 resolve to `forge-1.21.1-52`. The fixture resources also export to a Horizon
 `.hmod` whose manifest is validated (`api = "0.2"`,
 `capabilities = ["registries"]`).
@@ -297,7 +349,7 @@ asserts the exact blocker each one produces:
 | Fixture | Asserted result |
 | --- | --- |
 | `blocked-minecraft-ref` | `blocked`, exactly one error: `MinecraftClasses` |
-| `blocked-unsupported-forge` | `blocked`, `UnsupportedForgeApi` |
+| `blocked-unsupported-forge` | `blocked`, `UnsupportedForgeApi` (`net.minecraftforge.common.capabilities.Capability`) |
 | `blocked-external-lib` | `blocked`, `ExternalClasses` (`com.google.gson.Gson`) |
 | `blocked-mixin` | `blocked`, `MixinTransformer` |
 | `blocked-access-transformer` | `blocked`, `AccessTransformer` |
@@ -315,17 +367,20 @@ claimed as supported until a test for it is added and recorded here.
 
 ## Known gaps and honest limits
 
-- Most real Forge mods reference Minecraft classes and are therefore blocked.
-  That is the expected result, not a regression.
-- Mixin, coremods, access transformers, and nested jars are not executed.
-- The runtime has no Minecraft registries, `DeferredRegister`, capabilities,
-  networking, commands, world access, or client rendering.
+- Most real Forge mods reference Minecraft classes outside Vibe's subset and are
+  therefore blocked. That is the expected result, not a regression.
+- Mixin, coremods, and access transformers are not executed. Nested JARs are
+  extracted and loaded, but their dependency version ranges are not resolved.
+- The runtime has no Minecraft world, gameplay loop, capabilities, networking,
+  commands, or client rendering. Registries, items, blocks, and creative tabs
+  exist only as in-memory data and cannot be observed in game.
 - Third-party library references are analysed from the jar's constant pools and
-  compared with the classes the jar ships, the JDK/platform modules, Vibe's
-  Forge and log4j shims, and compile-time-only annotation packages. A reference
-  that remains is reported as `ExternalClasses`, with the classes and their
-  library groups. This is static evidence, not a runtime proof: a reference in
-  dead or reflective code can be reported even when it is never reached.
+  compared with the classes the jar ships, nested archives, the JDK/platform
+  modules, Vibe's Forge and log4j shims, and compile-time-only annotation
+  packages. A reference that remains is reported as `ExternalClasses`, with the
+  classes and their library groups. This is static evidence, not a runtime
+  proof: a reference in dead or reflective code can be reported even when it is
+  never reached.
 - No sandbox: mod code runs with the host's OS permissions.
 - Pack formats are not upgraded during export.
 - The Java runtime is compiled with `--release 17`; newer class files are

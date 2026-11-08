@@ -63,15 +63,15 @@ launches the JVM.
 
 | Crate | Responsibility |
 | --- | --- |
-| `vibe-core` | Domain types (`ModId`, errors), Forge metadata parsing, Maven version/range handling, class-file parsing, compatibility analysis, the embedded profile matrix, and reusable configuration types. |
-| `vibe-loader` | Recursive jar discovery, read-only zip inspection, manifest parsing, SHA-256, and extraction of class/resource facts. |
+| `vibe-core` | Domain types (`ModId`, errors), Forge metadata parsing, Maven version/range handling, class-file parsing, compatibility analysis, the embedded profile matrix, the embedded compatibility database, and reusable configuration types. |
+| `vibe-loader` | Recursive jar discovery, read-only zip inspection, manifest parsing, SHA-256, nested-archive scanning, and extraction of class/resource facts. |
 | `vibe-registry` | Registration of inspected mods, duplicate ids, namespace ownership, missing dependencies, cycles, and deterministic topological ordering. |
 | `vibe-events` | Standalone typed host event bus and lifecycle state machine. It is tested and available to embedding hosts; the CLI's authoritative event records come from the Java runtime. |
 | `vibe-bridge` | Protocol types, JSON-lines codec, Java 17+ discovery, runtime process client, handshake, request timeouts, event collection, and stderr capture. |
 | `vibe-horizon` | `horizon-ctl` discovery/probe and Horizon `.hmod` content export. |
-| `vibe-cli` | The `vibe` binary: `doctor`, `inspect`, `plan`, `run`, `profiles`, `horizon probe`, `horizon export`, human and `--json` output. |
-| `java/vibe-forge-api` | Clean-room Forge-shaped classes and annotations used by mods. |
-| `java/vibe-runtime` | Java bridge process, class loading, mod construction, event dispatch, and lifecycle execution. |
+| `vibe-cli` | The `vibe` binary: `doctor`, `inspect`, `plan`, `run`, `profiles`, `horizon`, `setup`, `mods`, `logs`, `bench`, `compat`, human and `--json` output. |
+| `java/vibe-forge-api` | Clean-room Forge-shaped classes and annotations used by mods, including the functional registry and Minecraft data subset. |
+| `java/vibe-runtime` | Java bridge process, class loading, nested-JAR extraction, mod construction, event dispatch, registry materialization, and lifecycle execution. |
 
 ## Analysis pipeline
 
@@ -92,7 +92,9 @@ silently ignored, and non-jar files are listed as skipped.
   annotations, and referenced class names;
 - `net.minecraft.*` and `net.minecraftforge.*` references;
 - Mixin configuration files, access-transformer files, core-plugin declarations,
-  and nested jar entries;
+  and nested jar entries (`META-INF/jarjar/` and `META-INF/jars/`);
+- classes inside nested archives, recorded as provided so bundled libraries are
+  not misreported as external;
 - asset/data presence and namespaces;
 - entries that failed to parse (reported, not fatal).
 
@@ -111,9 +113,10 @@ The parser does not load classes into a JVM.
 - `unknown`: not recognisably a Forge mod.
 
 Errors block a run. Warnings are visible in reports but do not by themselves
-prevent a run. The exact supported Forge API list is a constant shared by
-analysis and the Java runtime (see `SUPPORTED_FORGE_API` in
-`crates/vibe-core/src/analysis.rs`).
+prevent a run. The exact supported Forge API and Minecraft API lists are
+constants shared by analysis and the Java runtime (see `SUPPORTED_FORGE_API` and
+`SUPPORTED_MINECRAFT_API` in `crates/vibe-core/src/analysis.rs`). Only
+`net.minecraft.*` classes outside the implemented subset block a mod.
 
 ## Compatibility profiles
 
@@ -163,7 +166,36 @@ not treated as mods to look up in the input set.
 
 The registry does not implement Forge registries, `DeferredRegister`, or
 Minecraft content registration. It reports the mod ids and namespaces present in
-the input.
+the input. The **runtime** registry subset (below) is separate: it lives in the
+Java sidecar and materializes entries registered by mod code.
+
+## Runtime registry subset
+
+`java/vibe-forge-api` implements a small but functional registry layer:
+
+- `VibeRegistry` — an ordered in-memory map of `ResourceLocation` to value;
+- `VibeRegistryManager` — holds the item, block, and creative-tab registries,
+  posts `RegisterEvent` helpers, and reports a snapshot;
+- `DeferredRegister` and `RegistryObject` — lazy entry holders that resolve when
+  the owning registry materializes;
+- `ForgeRegistries` — accessors for the supported registries;
+- `RegisterEvent` — the Forge-shaped event posted once per registry.
+
+During the `register` phase the runtime posts `RegisterEvent` for
+`minecraft:item`, `minecraft:block`, and `minecraft:creative_mode_tab`, then
+calls `VibeRegistryManager.materializeAll()`. The result is returned by
+`registry.snapshot` under `registries`. This is real data that mods can read
+back; it is not connected to Minecraft or Horizon and cannot produce in-game
+items or blocks.
+
+## Nested JARs
+
+The Java runtime extracts archives under `META-INF/jarjar/` and `META-INF/jars/`
+to a per-session temporary directory, adds them to the owning mod's
+`URLClassLoader`, and deletes the directory in `reset()`. Inspection reads the
+same entries read-only and adds their class names to the provided-class set, so
+a bundled library does not trigger `ExternalClasses`. Nested dependency version
+ranges are not resolved.
 
 ## Java bridge
 
@@ -203,7 +235,7 @@ Methods:
 | `mods.load` | Load jars under one profile/backend, inspect entries, construct `@Mod` classes, register subscribers. The runtime rejects a profile or backend it does not provide. |
 | `lifecycle.start` | Run the Forge-shaped lifecycle. |
 | `mods.status` | Current side, phase, mod statuses, failures. |
-| `registry.snapshot` | Mod ids, namespaces, event records. |
+| `registry.snapshot` | Mod ids, namespaces, event records, and materialized registry entries. |
 | `runtime.shutdown` | Reply, then stop the process. |
 
 The real stdout is reserved for protocol frames. On startup the Java runtime
@@ -237,6 +269,7 @@ Lifecycle order as implemented:
 | --- | --- |
 | construct | Constructor |
 | construct_events | `FMLConstructModEvent`, then legacy `FMLConstructionEvent` |
+| register | `RegisterEvent` per supported registry, then `VibeRegistryManager.materializeAll()` |
 | common_setup | `FMLCommonSetupEvent`, then legacy `FMLPreInitializationEvent` |
 | init | legacy `FMLInitializationEvent` |
 | sided_setup | `FMLClientSetupEvent` for `CLIENT`, otherwise `FMLDedicatedServerSetupEvent` |

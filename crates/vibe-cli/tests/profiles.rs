@@ -77,7 +77,19 @@ fn profiles_lists_the_embedded_matrix() {
         .iter()
         .map(|profile| profile["id"].as_str().unwrap())
         .collect();
-    assert_eq!(ids, ["forge-1.20.1-47", "forge-1.21.1-52", "forge-26.3-66"]);
+    assert_eq!(
+        ids,
+        [
+            "forge-1.12.2-14",
+            "forge-1.16.5-36",
+            "forge-1.18.2-40",
+            "forge-1.19.2-43",
+            "forge-1.20.1-47",
+            "forge-1.20.4-49",
+            "forge-1.21.1-52",
+            "forge-26.3-66"
+        ]
+    );
     assert_eq!(value["horizon_content_api"], "0.2");
 
     let (code, value) = run(&["--json", "profiles", "--runtime-only"]);

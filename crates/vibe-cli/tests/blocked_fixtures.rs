@@ -43,7 +43,7 @@ fn each_blocker_kind_has_a_compiled_fixture() {
         (
             "unsupported-forge",
             BlockerKind::UnsupportedForgeApi,
-            "net.minecraftforge.registries.DeferredRegister",
+            "net.minecraftforge.common.capabilities.Capability",
         ),
         (
             "external-lib",

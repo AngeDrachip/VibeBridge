@@ -21,7 +21,7 @@ if (Test-Path $build) {
 }
 New-Item -ItemType Directory -Force -Path $build | Out-Null
 
-foreach ($name in @("hello-forge", "legacy-hello")) {
+foreach ($name in @("hello-forge", "legacy-hello", "registry-demo")) {
     $module = Join-Path $root $name
     $classes = Join-Path $build "$name\classes"
     New-Item -ItemType Directory -Force -Path $classes | Out-Null
@@ -38,3 +38,39 @@ foreach ($name in @("hello-forge", "legacy-hello")) {
     }
     Write-Host "Built $jarPath"
 }
+
+# nested-demo bundles a real library under META-INF/jarjar/ so tests can prove
+# Vibe extracts nested archives and puts them on the mod class loader.
+$nestedModule = Join-Path $root "nested-demo"
+$nestedBuild = Join-Path $build "nested-demo"
+$libClasses = Join-Path $nestedBuild "lib-classes"
+$modClasses = Join-Path $nestedBuild "classes"
+$nestedStage = Join-Path $nestedBuild "resources"
+New-Item -ItemType Directory -Force -Path $libClasses, $modClasses, (Join-Path $nestedStage "META-INF\jarjar") | Out-Null
+
+$libSources = Get-ChildItem -Recurse -File -Filter *.java (Join-Path $nestedModule "lib") |
+    Select-Object -ExpandProperty FullName
+& $javac --release 17 -encoding UTF-8 -Xlint:all -d $libClasses $libSources
+if ($LASTEXITCODE -ne 0) {
+    throw "javac failed for nested-demo library with exit code $LASTEXITCODE"
+}
+$nestedLibJar = Join-Path $nestedBuild "nested-lib.jar"
+& $jarTool --create --file $nestedLibJar -C $libClasses .
+if ($LASTEXITCODE -ne 0) {
+    throw "jar failed for nested-demo library with exit code $LASTEXITCODE"
+}
+Copy-Item -Force $nestedLibJar (Join-Path $nestedStage "META-INF\jarjar\nested-lib.jar")
+Copy-Item -Recurse -Force (Join-Path $nestedModule "src\main\resources\*") $nestedStage
+
+$modSources = Get-ChildItem -Recurse -File -Filter *.java (Join-Path $nestedModule "src\main\java") |
+    Select-Object -ExpandProperty FullName
+& $javac --release 17 -encoding UTF-8 -Xlint:all -cp "$api;$libClasses" -d $modClasses $modSources
+if ($LASTEXITCODE -ne 0) {
+    throw "javac failed for nested-demo with exit code $LASTEXITCODE"
+}
+$nestedJar = Join-Path $build "nested-demo.jar"
+& $jarTool --create --file $nestedJar -C $modClasses . -C $nestedStage .
+if ($LASTEXITCODE -ne 0) {
+    throw "jar failed for nested-demo with exit code $LASTEXITCODE"
+}
+Write-Host "Built $nestedJar"

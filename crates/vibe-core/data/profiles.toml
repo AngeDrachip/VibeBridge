@@ -20,6 +20,50 @@ schema = 1
 horizon_content_api = "0.2"
 
 [[profiles]]
+id = "forge-1.12.2-14"
+display_name = "Forge 14 / Minecraft 1.12.2"
+minecraft = "1.12.2"
+minecraft_range = "[1.12.2,1.12.3)"
+forge_version = "14.23.5.2860"
+forge_range = "[14,15)"
+java_release = 8
+status = "metadata-only"
+notes = "Legacy javafml/mcmod.info target. Vibe detects and plans these mods but has no runtime backend for Forge 14."
+
+[[profiles]]
+id = "forge-1.16.5-36"
+display_name = "Forge 36 / Minecraft 1.16.5"
+minecraft = "1.16.5"
+minecraft_range = "[1.16.5,1.16.6)"
+forge_version = "36.2.39"
+forge_range = "[36,37)"
+java_release = 8
+status = "metadata-only"
+notes = "Vibe detects, plans, inspects, and exports content, but has no runtime backend for Forge 36."
+
+[[profiles]]
+id = "forge-1.18.2-40"
+display_name = "Forge 40 / Minecraft 1.18.2"
+minecraft = "1.18.2"
+minecraft_range = "[1.18.2,1.18.3)"
+forge_version = "40.2.21"
+forge_range = "[40,41)"
+java_release = 17
+status = "metadata-only"
+notes = "Vibe detects, plans, inspects, and exports content, but has no runtime backend for Forge 40."
+
+[[profiles]]
+id = "forge-1.19.2-43"
+display_name = "Forge 43 / Minecraft 1.19.2"
+minecraft = "1.19.2"
+minecraft_range = "[1.19.2,1.19.3)"
+forge_version = "43.3.13"
+forge_range = "[43,44)"
+java_release = 17
+status = "metadata-only"
+notes = "Vibe detects, plans, inspects, and exports content, but has no runtime backend for Forge 43."
+
+[[profiles]]
 id = "forge-1.20.1-47"
 display_name = "Forge 47 / Minecraft 1.20.1"
 minecraft = "1.20.1"
@@ -30,6 +74,17 @@ java_release = 17
 backend = "forge-api-subset-v1"
 status = "experimental-subset"
 notes = "Forge 47.x targets Minecraft 1.20.1. Runtime support is the Vibe Forge API subset, not Minecraft."
+
+[[profiles]]
+id = "forge-1.20.4-49"
+display_name = "Forge 49 / Minecraft 1.20.4"
+minecraft = "1.20.4"
+minecraft_range = "[1.20.4,1.20.5)"
+forge_version = "49.0.50"
+forge_range = "[49,50)"
+java_release = 17
+status = "metadata-only"
+notes = "Vibe detects, plans, inspects, and exports content, but has no runtime backend for Forge 49."
 
 [[profiles]]
 id = "forge-1.21.1-52"

@@ -8,7 +8,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
@@ -19,7 +19,7 @@ use vibe_bridge::{
 use vibe_core::error::{Result, VibeError};
 use vibe_core::metadata::ModSide;
 use vibe_core::profile::{ModRequirements, ProfileMatrix, ProfileResolution, ResolutionStatus};
-use vibe_core::Verdict;
+use vibe_core::{CompatDatabase, CompatStatus, Verdict};
 use vibe_horizon::{
     export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
 };
@@ -60,6 +60,16 @@ enum Command {
     Profiles(ProfilesArgs),
     /// Work with a Horizon installation.
     Horizon(HorizonArgs),
+    /// Create Vibe's working folders and report detected prerequisites.
+    Setup(SetupArgs),
+    /// Scan mod folders and enable or disable jars.
+    Mods(ModsArgs),
+    /// List and inspect Vibe run logs.
+    Logs(LogsArgs),
+    /// Measure JVM startup, mod load, and lifecycle time.
+    Bench(BenchArgs),
+    /// Show the embedded compatibility database.
+    Compat(CompatArgs),
 }
 
 #[derive(Args)]
@@ -212,6 +222,98 @@ struct InstallArgs {
     dry_run: bool,
 }
 
+#[derive(Args)]
+struct SetupArgs {
+    /// Base directory for mods/, mods-disabled/, and logs/.
+    #[arg(long, default_value = ".")]
+    dir: PathBuf,
+    /// Java executable or JDK/JRE home to use.
+    #[arg(long)]
+    java: Option<PathBuf>,
+    /// Vibe runtime jar or classes directory.
+    #[arg(long)]
+    runtime: Option<PathBuf>,
+    /// horizon-ctl executable or installation folder.
+    #[arg(long)]
+    ctl: Option<PathBuf>,
+    /// Horizon game folder to check: the one holding options.txt.
+    #[arg(long)]
+    game_dir: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct ModsArgs {
+    /// Folders containing enabled jars. Defaults to ./mods.
+    #[arg(default_value = "mods")]
+    paths: Vec<PathBuf>,
+    /// Plan for one side. Dependencies declared for the other side are
+    /// reported but not required.
+    #[arg(long, value_parser = ["CLIENT", "SERVER", "client", "server"])]
+    side: Option<String>,
+    /// Check every mod against this compatibility profile.
+    #[arg(long)]
+    profile: Option<String>,
+    /// Move a jar from an enabled folder into the disabled folder.
+    #[arg(long)]
+    disable: Vec<PathBuf>,
+    /// Move a jar from the disabled folder back into the first enabled folder.
+    #[arg(long)]
+    enable: Vec<PathBuf>,
+    /// Folder used for disabled jars.
+    #[arg(long, default_value = "mods-disabled")]
+    disabled_dir: PathBuf,
+}
+
+#[derive(Args)]
+struct LogsArgs {
+    /// Folder holding Vibe run logs.
+    #[arg(long, default_value = "logs")]
+    dir: PathBuf,
+    /// Print the last N lines of the newest log.
+    #[arg(long, default_value_t = 40)]
+    tail: usize,
+    /// Print one log file instead of the newest.
+    #[arg(long)]
+    show: Option<PathBuf>,
+}
+
+#[derive(Args)]
+struct BenchArgs {
+    /// Jars or directories containing jars. Defaults to ./mods.
+    #[arg(default_value = "mods")]
+    paths: Vec<PathBuf>,
+    /// Number of measured runs.
+    #[arg(long, default_value_t = 3)]
+    iterations: u32,
+    #[arg(long)]
+    java: Option<PathBuf>,
+    /// Vibe runtime jar or classes directory.
+    #[arg(long)]
+    runtime: Option<PathBuf>,
+    #[arg(long, default_value = "SERVER", value_parser = ["SERVER", "CLIENT", "server", "client"])]
+    side: String,
+    #[arg(long)]
+    profile: Option<String>,
+    #[arg(long, default_value_t = 2048)]
+    heap_mb: u32,
+}
+
+#[derive(Args)]
+struct CompatArgs {
+    /// Read a compatibility database instead of the embedded one.
+    #[arg(long)]
+    file: Option<PathBuf>,
+    /// Only show entries with this status.
+    #[arg(
+        long,
+        value_parser = [
+            "FULL", "HIGH", "PARTIAL", "CONTENT_ONLY", "BLOCKED", "UNKNOWN",
+            "full", "high", "partial", "content_only", "blocked", "unknown"
+        ]
+    )]
+    status: Option<String>,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
     match execute(cli) {
@@ -237,6 +339,11 @@ fn execute(cli: Cli) -> Result<u8> {
             HorizonCommand::Validate(args) => horizon_validate(args, json),
             HorizonCommand::Install(args) => horizon_install(args, json),
         },
+        Command::Setup(args) => setup(args, json),
+        Command::Mods(args) => mods(args, json),
+        Command::Logs(args) => logs(args, json),
+        Command::Bench(args) => bench(args, json),
+        Command::Compat(args) => compat(args, json),
     }
 }
 
@@ -965,7 +1072,7 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         .unwrap_or(false);
     let report = json!({
         "started": true,
-        "session": session,
+        "session": session.clone(),
         "side": side,
         "profile": json!({
             "id": active_profile,
@@ -987,6 +1094,9 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         "shutdown_error": shutdown_error,
         "ok": lifecycle_ok && outcome.is_ok(),
     });
+    let (log_path, crash_path) = write_run_logs(&report, &session)?;
+    let mut report = report;
+    report["logs"] = json!({ "run": log_path, "crash": crash_path });
 
     if json {
         print_json(&report)?;
@@ -1079,6 +1189,12 @@ fn run(args: RunArgs, json: bool) -> Result<u8> {
         }
         if !events.is_empty() {
             println!("  bridge events: {}", events.len());
+        }
+        if let Some(path) = report["logs"]["run"].as_str() {
+            println!("  log:   {path}");
+        }
+        if let Some(path) = report["logs"]["crash"].as_str() {
+            println!("  crash: {path} (share this file when reporting a problem)");
         }
         for entry in &skipped {
             println!(
@@ -1332,6 +1448,754 @@ fn horizon_install(args: InstallArgs, json: bool) -> Result<u8> {
         }
     }
     Ok(0)
+}
+
+// ---------------------------------------------------------------------------
+// setup
+// ---------------------------------------------------------------------------
+
+fn setup(args: SetupArgs, json: bool) -> Result<u8> {
+    let base = &args.dir;
+    std::fs::create_dir_all(base)?;
+    let mods_dir = base.join("mods");
+    let disabled_dir = base.join("mods-disabled");
+    let logs_dir = base.join("logs");
+    let mut created = Vec::new();
+    for dir in [&mods_dir, &disabled_dir, &logs_dir] {
+        if !dir.exists() {
+            std::fs::create_dir_all(dir)?;
+            created.push(dir.clone());
+        }
+    }
+
+    let java = locate_java(args.java.as_deref());
+    let runtime = resolve_runtime(args.runtime);
+    let runtime_ok = runtime.as_ref().map(|path| path.exists()).unwrap_or(false);
+    let horizon = probe(args.ctl.as_deref());
+
+    let mut horizon_mods = None;
+    if let Some(game_dir) = &args.game_dir {
+        if game_dir.is_dir() {
+            let folder = game_dir.join("horizon-mods");
+            if !folder.exists() {
+                std::fs::create_dir_all(&folder)?;
+                created.push(folder.clone());
+            }
+            horizon_mods = Some(folder);
+        }
+    }
+
+    let java_value = match &java {
+        Ok(java) => json!({
+            "ok": true,
+            "executable": java.executable,
+            "version": java.version,
+            "major": java.major,
+            "vendor": java.vendor,
+        }),
+        Err(error) => json!({ "ok": false, "error": error.to_string() }),
+    };
+    let runtime_value = match &runtime {
+        Some(path) if path.exists() => json!({ "ok": true, "path": path }),
+        Some(path) => json!({ "ok": false, "path": path, "error": "file does not exist" }),
+        None => json!({
+            "ok": false,
+            "error": "no Vibe runtime found; build java/ or pass --runtime"
+        }),
+    };
+    let report = json!({
+        "ok": java.is_ok() && runtime_ok,
+        "base": base,
+        "created": created,
+        "mods": mods_dir,
+        "disabled": disabled_dir,
+        "logs": logs_dir,
+        "java": java_value,
+        "runtime": runtime_value,
+        "horizon": horizon,
+        "horizon_mods": horizon_mods,
+    });
+
+    if json {
+        print_json(&report)?;
+    } else {
+        println!("Vibe setup in {}", base.display());
+        for dir in &created {
+            println!("  created {}", dir.display());
+        }
+        match &java {
+            Ok(java) => println!(
+                "  Java:    {} ({})",
+                java.executable.display(),
+                java.version
+            ),
+            Err(error) => println!("  Java:    NOT FOUND ({error})"),
+        }
+        match (&runtime, runtime_ok) {
+            (Some(path), true) => println!("  Runtime: {}", path.display()),
+            (Some(path), false) => println!("  Runtime: {} (missing)", path.display()),
+            (None, _) => println!("  Runtime: NOT FOUND"),
+        }
+        match &horizon.ctl {
+            Some(ctl) => {
+                println!(
+                    "  Horizon: {} (help ok: {})",
+                    ctl.display(),
+                    horizon.help_ok
+                );
+                if horizon.game_reachable {
+                    println!("           a running game answered horizon-ctl state");
+                }
+            }
+            None => println!("  Horizon: horizon-ctl not found"),
+        }
+        if let Some(folder) = &horizon_mods {
+            println!("  Horizon mods: {}", folder.display());
+        }
+        println!("\nNext steps:");
+        if java.is_err() {
+            println!("  1. Install a JDK 17+ and run `vibe setup` again.");
+        }
+        if !runtime_ok {
+            println!("  1. Build the Vibe runtime: `java\\build.ps1` (Windows) or `java/build.sh` (Linux).");
+        }
+        println!("  2. Copy original Forge jars into {}", mods_dir.display());
+        println!("  3. Run `vibe mods` to see detected versions and dependencies.");
+        println!("  4. Run `vibe run` to start the Java runtime, or `vibe horizon export <jar>` for content-only mods.");
+    }
+    Ok(if java.is_ok() && runtime_ok { 0 } else { 1 })
+}
+
+// ---------------------------------------------------------------------------
+// mods
+// ---------------------------------------------------------------------------
+
+fn mods(args: ModsArgs, json: bool) -> Result<u8> {
+    let enabled_dirs = &args.paths;
+    let mut moved = Vec::new();
+
+    for path in &args.disable {
+        let source =
+            find_jar(path, enabled_dirs).ok_or_else(|| VibeError::MissingPath(path.clone()))?;
+        let destination = move_jar(&source, &args.disabled_dir)?;
+        moved.push(json!({ "action": "disabled", "from": source, "to": destination }));
+    }
+    for path in &args.enable {
+        let source = find_jar(path, std::slice::from_ref(&args.disabled_dir))
+            .ok_or_else(|| VibeError::MissingPath(path.clone()))?;
+        let target_dir = enabled_dirs
+            .first()
+            .cloned()
+            .unwrap_or_else(|| PathBuf::from("mods"));
+        let destination = move_jar(&source, &target_dir)?;
+        moved.push(json!({ "action": "enabled", "from": source, "to": destination }));
+    }
+
+    let discovery = discover_jars(enabled_dirs)?;
+    let mut inspections = Vec::new();
+    let mut errors = Vec::new();
+    for jar in &discovery.jars {
+        match inspect_jar(jar, None) {
+            Ok(inspection) => inspections.push(inspection),
+            Err(error) => errors.push(json!({ "path": jar, "error": error.to_string() })),
+        }
+    }
+    for missing in &discovery.missing_paths {
+        errors.push(json!({ "path": missing, "error": "path does not exist" }));
+    }
+
+    let side = args.side.as_deref().map(ModSide::parse);
+    let plan = plan_for_side_with_profile(&inspections, side, args.profile.as_deref());
+
+    let mut disabled_inspections = Vec::new();
+    if args.disabled_dir.is_dir() {
+        let disabled = discover_jars(std::slice::from_ref(&args.disabled_dir))?;
+        for jar in &disabled.jars {
+            if let Ok(inspection) = inspect_jar(jar, None) {
+                disabled_inspections.push(inspection);
+            }
+        }
+    }
+
+    let mut missing_by_owner: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for missing in &plan.missing_dependencies {
+        missing_by_owner
+            .entry(missing.owner.to_string())
+            .or_default()
+            .push(format!(
+                "{} {}{}",
+                missing.dependency,
+                missing.version_range,
+                if missing.mandatory {
+                    " (required)"
+                } else {
+                    " (optional)"
+                }
+            ));
+    }
+
+    let matrix = ProfileMatrix::embedded()?;
+    let mut rows = Vec::new();
+    for module in &plan.mods {
+        let minecraft = module.minecraft_range.clone();
+        let forge = module.forge_range.clone();
+        rows.push(json!({
+            "enabled": true,
+            "id": module.id.to_string(),
+            "version": module.version,
+            "jar": module.jar,
+            "verdict": verdict_label(module.verdict),
+            "profile": module.target_profile.clone(),
+            "profile_status": module.profile_status,
+            "minecraft": minecraft,
+            "forge": forge,
+            "missing": missing_by_owner.get(module.id.as_str()).cloned().unwrap_or_default(),
+        }));
+    }
+    for inspection in &disabled_inspections {
+        let resolution = matrix.resolve(
+            &ModRequirements::from_metadata(&inspection.metadata),
+            args.profile.as_deref(),
+        );
+        rows.push(json!({
+            "enabled": false,
+            "id": inspection.primary_mod_id(),
+            "version": inspection
+                .metadata
+                .mods
+                .first()
+                .map(|module| module.version.clone())
+                .unwrap_or_default(),
+            "jar": inspection.path,
+            "verdict": verdict_label(inspection.report.verdict),
+            "profile": resolution.selected,
+            "profile_status": resolution.status,
+            "minecraft": inspection.metadata.minecraft_version_range.clone(),
+            "forge": inspection.metadata.forge_version_range.clone(),
+            "missing": [],
+        }));
+    }
+
+    if json {
+        print_json(&json!({
+            "mods": rows,
+            "moved": moved,
+            "plan": plan,
+            "errors": errors,
+        }))?;
+    } else {
+        if !moved.is_empty() {
+            for entry in &moved {
+                println!(
+                    "{} {} -> {}",
+                    entry
+                        .get("action")
+                        .and_then(Value::as_str)
+                        .unwrap_or("moved"),
+                    entry.get("from").and_then(Value::as_str).unwrap_or("?"),
+                    entry.get("to").and_then(Value::as_str).unwrap_or("?")
+                );
+            }
+            println!();
+        }
+        if rows.is_empty() {
+            println!(
+                "No mod jars found. Put original Forge jars in ./mods and run `vibe mods` again."
+            );
+        } else {
+            println!(
+                "{:<9} {:<22} {:<10} {:<22} {:<16} JAR",
+                "STATE", "ID", "VERSION", "PROFILE", "VERDICT"
+            );
+            for row in &rows {
+                println!(
+                    "{:<9} {:<22} {:<10} {:<22} {:<16} {}",
+                    if row.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    },
+                    row.get("id").and_then(Value::as_str).unwrap_or("?"),
+                    row.get("version").and_then(Value::as_str).unwrap_or("?"),
+                    row.get("profile").and_then(Value::as_str).unwrap_or("-"),
+                    row.get("verdict").and_then(Value::as_str).unwrap_or("?"),
+                    row.get("jar").and_then(Value::as_str).unwrap_or("?")
+                );
+            }
+            for row in &rows {
+                if let Some(missing) = row.get("missing").and_then(Value::as_array) {
+                    for item in missing {
+                        println!(
+                            "  MISSING {} needs {}",
+                            row.get("id").and_then(Value::as_str).unwrap_or("?"),
+                            item.as_str().unwrap_or("?")
+                        );
+                    }
+                }
+            }
+        }
+        for error in &errors {
+            println!(
+                "  ERROR {}: {}",
+                error.get("path").and_then(Value::as_str).unwrap_or("?"),
+                error.get("error").and_then(Value::as_str).unwrap_or("?")
+            );
+        }
+        println!("\nEnable/disable: `vibe mods --disable <jar>` or `vibe mods --enable <jar>`.");
+    }
+    Ok(if errors.is_empty() { 0 } else { 1 })
+}
+
+fn find_jar(path: &Path, dirs: &[PathBuf]) -> Option<PathBuf> {
+    if path.is_file() {
+        return Some(path.to_path_buf());
+    }
+    let name = path.file_name()?;
+    for dir in dirs {
+        let candidate = dir.join(name);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn move_jar(source: &Path, destination_dir: &Path) -> Result<PathBuf> {
+    std::fs::create_dir_all(destination_dir)?;
+    let name = source
+        .file_name()
+        .ok_or_else(|| VibeError::Config(format!("invalid jar path {}", source.display())))?;
+    let destination = destination_dir.join(name);
+    if destination.exists() {
+        return Err(VibeError::Config(format!(
+            "refusing to overwrite {}; move or rename it first",
+            destination.display()
+        )));
+    }
+    match std::fs::rename(source, &destination) {
+        Ok(()) => Ok(destination),
+        Err(_) => {
+            std::fs::copy(source, &destination)?;
+            std::fs::remove_file(source)?;
+            Ok(destination)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// logs
+// ---------------------------------------------------------------------------
+
+fn logs(args: LogsArgs, json: bool) -> Result<u8> {
+    let mut entries = Vec::new();
+    if args.dir.is_dir() {
+        for entry in std::fs::read_dir(&args.dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let metadata = entry.metadata()?;
+            let modified_ms = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            entries.push((modified_ms, path, metadata.len()));
+        }
+    }
+    entries.sort_by_key(|a| std::cmp::Reverse(a.0));
+
+    let selected = match &args.show {
+        Some(path) => {
+            let candidate = if path.exists() {
+                path.clone()
+            } else {
+                args.dir.join(path)
+            };
+            if !candidate.is_file() {
+                return Err(VibeError::MissingPath(candidate));
+            }
+            Some(candidate)
+        }
+        None => entries.first().map(|(_, path, _)| path.clone()),
+    };
+    let tail = match &selected {
+        Some(path) => tail_file(path, args.tail)?,
+        None => Vec::new(),
+    };
+
+    if json {
+        print_json(&json!({
+            "dir": args.dir,
+            "logs": entries
+                .iter()
+                .map(|(modified, path, bytes)| json!({
+                    "path": path,
+                    "bytes": bytes,
+                    "modified_ms": modified,
+                }))
+                .collect::<Vec<_>>(),
+            "shown": selected,
+            "tail": tail,
+        }))?;
+    } else {
+        if entries.is_empty() {
+            println!("No logs in {}. Run `vibe run` first.", args.dir.display());
+        } else {
+            println!("Logs in {} (newest first):", args.dir.display());
+            for (_, path, bytes) in &entries {
+                println!(
+                    "  {:<44} {:>8} bytes",
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or("?"),
+                    bytes
+                );
+            }
+        }
+        if let Some(path) = &selected {
+            println!("\n{} (last {} lines):", path.display(), args.tail);
+            for line in &tail {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(0)
+}
+
+fn tail_file(path: &Path, lines: usize) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(path)?;
+    let all: Vec<&str> = text.lines().collect();
+    let start = all.len().saturating_sub(lines);
+    Ok(all[start..].iter().map(|line| line.to_string()).collect())
+}
+
+// ---------------------------------------------------------------------------
+// bench
+// ---------------------------------------------------------------------------
+
+fn bench(args: BenchArgs, json: bool) -> Result<u8> {
+    let matrix = ProfileMatrix::embedded()?;
+    let discovery = discover_jars(&args.paths)?;
+    let mut inspections = Vec::new();
+    for jar in &discovery.jars {
+        if let Ok(inspection) = inspect_jar(jar, None) {
+            inspections.push(inspection);
+        }
+    }
+    let runnable: Vec<_> = inspections
+        .iter()
+        .filter(|inspection| inspection.report.verdict == Verdict::RunnableSubset)
+        .cloned()
+        .collect();
+    if runnable.is_empty() {
+        let report = json!({
+            "ok": false,
+            "reason": "no runnable jars were found; inspect the blockers first",
+            "scanned": inspections.len(),
+        });
+        if json {
+            print_json(&report)?;
+        } else {
+            println!("No runnable jars found in {:?}.", args.paths);
+        }
+        return Ok(3);
+    }
+
+    let requested = args.profile.as_deref();
+    let mut by_profile: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    for inspection in &runnable {
+        let resolution = matrix.resolve(
+            &ModRequirements::from_metadata(&inspection.metadata),
+            requested,
+        );
+        if let Some(profile) = resolution.selected {
+            by_profile
+                .entry(profile)
+                .or_default()
+                .push(inspection.path.clone());
+        }
+    }
+    if by_profile.len() != 1 {
+        let report = json!({
+            "ok": false,
+            "reason": "benchmark runs one profile per JVM; select a single profile",
+            "profiles": by_profile,
+        });
+        if json {
+            print_json(&report)?;
+        } else {
+            println!("Select one profile with --profile; matched: {by_profile:?}");
+        }
+        return Ok(EXIT_PROFILE_CONFLICT);
+    }
+    let profile_id = by_profile.keys().next().cloned().unwrap_or_default();
+    let profile = matrix
+        .get(&profile_id)
+        .ok_or_else(|| VibeError::Config(format!("unknown profile {profile_id}")))?;
+    let backend = profile.backend.clone();
+    let java = locate_java(args.java.as_deref())?;
+    let runtime = resolve_runtime(args.runtime)
+        .filter(|path| path.exists())
+        .ok_or_else(|| VibeError::Runtime("no Vibe runtime found".into()))?;
+    let side = args.side.to_uppercase();
+    let selected: Vec<PathBuf> = runnable
+        .iter()
+        .map(|inspection| inspection.path.clone())
+        .collect();
+
+    let mut samples = Vec::new();
+    for _ in 0..args.iterations.max(1) {
+        let total_start = Instant::now();
+        let mut options = RuntimeOptions::new(java.clone(), runtime.clone());
+        options.side = side.clone();
+        options.profile = Some(profile_id.clone());
+        options.backend = backend.clone();
+        options.max_heap_mb = args.heap_mb;
+        options.start_timeout = Duration::from_secs(60);
+        options.request_timeout = Duration::from_secs(60);
+
+        let start = Instant::now();
+        let mut client = RuntimeClient::spawn(options)?;
+        let startup = start.elapsed();
+        let load_start = Instant::now();
+        let _ = client.load_mods_with_profile(
+            &selected,
+            &side,
+            Some(&profile_id),
+            backend.as_deref(),
+        )?;
+        let load = load_start.elapsed();
+        let lifecycle_start = Instant::now();
+        let lifecycle = client.start_lifecycle()?;
+        let lifecycle_time = lifecycle_start.elapsed();
+        let ok = lifecycle
+            .get("ok")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let total = total_start.elapsed();
+        let _ = client.shutdown();
+        samples.push(json!({
+            "startup_ms": millis(startup),
+            "load_ms": millis(load),
+            "lifecycle_ms": millis(lifecycle_time),
+            "total_ms": millis(total),
+            "ok": ok,
+        }));
+    }
+
+    let summary = json!({
+        "startup_ms": stats(&samples, "startup_ms"),
+        "load_ms": stats(&samples, "load_ms"),
+        "lifecycle_ms": stats(&samples, "lifecycle_ms"),
+        "total_ms": stats(&samples, "total_ms"),
+    });
+    let all_ok = samples
+        .iter()
+        .all(|sample| sample.get("ok").and_then(Value::as_bool).unwrap_or(false));
+    let report = json!({
+        "ok": all_ok,
+        "profile": profile_id,
+        "backend": backend,
+        "side": side,
+        "mods": selected,
+        "iterations": samples.len(),
+        "samples": samples,
+        "summary": summary,
+    });
+
+    if json {
+        print_json(&report)?;
+    } else {
+        println!(
+            "Benchmark: {} iteration(s), profile {profile_id}, side {side}, {} mod jar(s)",
+            samples.len(),
+            selected.len()
+        );
+        for (index, sample) in samples.iter().enumerate() {
+            println!(
+                "  run {}: startup {:.1} ms, load {:.1} ms, lifecycle {:.1} ms, total {:.1} ms, ok={}",
+                index + 1,
+                sample["startup_ms"].as_f64().unwrap_or(0.0),
+                sample["load_ms"].as_f64().unwrap_or(0.0),
+                sample["lifecycle_ms"].as_f64().unwrap_or(0.0),
+                sample["total_ms"].as_f64().unwrap_or(0.0),
+                sample["ok"].as_bool().unwrap_or(false)
+            );
+        }
+        for (label, key) in [
+            ("startup", "startup_ms"),
+            ("load", "load_ms"),
+            ("lifecycle", "lifecycle_ms"),
+            ("total", "total_ms"),
+        ] {
+            let value = &summary[key];
+            println!(
+                "  {label:<10} min {:.1} ms, median {:.1} ms, max {:.1} ms",
+                value["min"].as_f64().unwrap_or(0.0),
+                value["median"].as_f64().unwrap_or(0.0),
+                value["max"].as_f64().unwrap_or(0.0)
+            );
+        }
+    }
+    Ok(if all_ok { 0 } else { 4 })
+}
+
+fn millis(duration: Duration) -> f64 {
+    duration.as_secs_f64() * 1000.0
+}
+
+fn stats(samples: &[Value], key: &str) -> Value {
+    let mut values: Vec<f64> = samples
+        .iter()
+        .filter_map(|sample| sample.get(key).and_then(Value::as_f64))
+        .collect();
+    if values.is_empty() {
+        return json!({ "min": 0.0, "median": 0.0, "max": 0.0 });
+    }
+    values.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = if values.len() % 2 == 0 {
+        (values[values.len() / 2 - 1] + values[values.len() / 2]) / 2.0
+    } else {
+        values[values.len() / 2]
+    };
+    json!({
+        "min": values[0],
+        "median": median,
+        "max": values[values.len() - 1],
+    })
+}
+
+// ---------------------------------------------------------------------------
+// compat
+// ---------------------------------------------------------------------------
+
+fn compat(args: CompatArgs, json: bool) -> Result<u8> {
+    let database = match &args.file {
+        Some(path) => CompatDatabase::parse(&std::fs::read_to_string(path)?)?,
+        None => CompatDatabase::embedded()?,
+    };
+    let filter = args.status.as_deref().and_then(CompatStatus::parse);
+    let entries: Vec<_> = database
+        .entries
+        .iter()
+        .filter(|entry| filter.map(|status| entry.status == status).unwrap_or(true))
+        .collect();
+
+    if json {
+        print_json(&json!({
+            "schema": database.schema,
+            "entries": entries,
+        }))?;
+    } else {
+        if entries.is_empty() {
+            println!("No compatibility entries matched.");
+        } else {
+            println!(
+                "{:<13} {:<18} {:<14} {:<10} EVIDENCE",
+                "STATUS", "ID", "CATEGORY", "MINECRAFT"
+            );
+            for entry in &entries {
+                println!(
+                    "{:<13} {:<18} {:<14} {:<10} {}",
+                    entry.status.as_str(),
+                    entry.id,
+                    entry.category,
+                    entry.minecraft.as_deref().unwrap_or("-"),
+                    entry.evidence
+                );
+            }
+        }
+        println!(
+            "\nFULL/HIGH/PARTIAL/CONTENT_ONLY/BLOCKED/UNKNOWN are evidence-based. UNKNOWN entries have not been tested."
+        );
+    }
+    Ok(0)
+}
+
+fn write_run_logs(report: &Value, session: &str) -> Result<(PathBuf, Option<PathBuf>)> {
+    let dir = PathBuf::from("logs");
+    std::fs::create_dir_all(&dir)?;
+    let safe: String = session
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || character == '-' || character == '_' {
+                character
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let text = render_run_log(report);
+    let run_log = dir.join(format!("vibe-run-{safe}.log"));
+    std::fs::write(&run_log, &text)?;
+    let json_log = dir.join(format!("vibe-run-{safe}.json"));
+    let json_text = serde_json::to_string_pretty(report)
+        .map_err(|error| VibeError::Config(format!("could not serialize run log: {error}")))?;
+    std::fs::write(&json_log, json_text)?;
+
+    let ok = report.get("ok").and_then(Value::as_bool).unwrap_or(false);
+    let crash_log = if ok {
+        None
+    } else {
+        let path = dir.join(format!("vibe-crash-{safe}.log"));
+        std::fs::write(&path, &text)?;
+        Some(path)
+    };
+    Ok((run_log, crash_log))
+}
+
+fn render_run_log(report: &Value) -> String {
+    let mut out = String::new();
+    out.push_str("Vibe run log\n");
+    out.push_str(&format!(
+        "session: {}\n",
+        report.get("session").and_then(Value::as_str).unwrap_or("?")
+    ));
+    out.push_str(&format!(
+        "ok: {}\n",
+        report.get("ok").and_then(Value::as_bool).unwrap_or(false)
+    ));
+    out.push_str(&format!(
+        "side: {}\n",
+        report.get("side").and_then(Value::as_str).unwrap_or("?")
+    ));
+    if let Some(profile) = report.get("profile") {
+        out.push_str(&format!(
+            "profile: {}\n",
+            serde_json::to_string(profile).unwrap_or_else(|_| "?".into())
+        ));
+    }
+    if let Some(error) = report.get("error").and_then(Value::as_str) {
+        out.push_str(&format!("error: {error}\n"));
+    }
+    if let Some(error) = report.get("shutdown_error").and_then(Value::as_str) {
+        out.push_str(&format!("shutdown_error: {error}\n"));
+    }
+    if let Some(mods) = report
+        .get("lifecycle")
+        .and_then(|lifecycle| lifecycle.get("mods"))
+        .and_then(Value::as_array)
+    {
+        out.push_str("\nmods:\n");
+        for module in mods {
+            out.push_str(&format!(
+                "  {:<24} {:<14} {}\n",
+                module.get("id").and_then(Value::as_str).unwrap_or("?"),
+                module.get("status").and_then(Value::as_str).unwrap_or("?"),
+                module.get("error").and_then(Value::as_str).unwrap_or("")
+            ));
+        }
+    }
+    out.push_str("\nfull report:\n");
+    out.push_str(
+        &serde_json::to_string_pretty(report)
+            .unwrap_or_else(|_| "{\"error\":\"unprintable\"}".into()),
+    );
+    out.push('\n');
+    out
 }
 
 fn resolve_runtime(explicit: Option<PathBuf>) -> Option<PathBuf> {

@@ -255,6 +255,37 @@ pub const SUPPORTED_FORGE_API: &[&str] = &[
     "net.minecraftforge.fml.event.lifecycle.InterModEnqueueEvent",
     "net.minecraftforge.fml.event.lifecycle.InterModProcessEvent",
     "net.minecraftforge.fml.javafmlmod.FMLJavaModLoadingContext",
+    "net.minecraftforge.registries.DeferredRegister",
+    "net.minecraftforge.registries.ForgeRegistries",
+    "net.minecraftforge.registries.IForgeRegistry",
+    "net.minecraftforge.registries.RegisterEvent",
+    "net.minecraftforge.registries.RegisterEvent$RegisterHelper",
+    "net.minecraftforge.registries.RegistryObject",
+    "net.minecraftforge.registries.VibeRegistry",
+    "net.minecraftforge.registries.VibeRegistryManager",
+];
+
+/// The Minecraft API surface implemented by Vibe's clean-room shim.
+///
+/// Minecraft classes are only runnable when Vibe provides a real
+/// implementation. This list must stay in sync with
+/// `java/vibe-forge-api/src/main/java/net/minecraft/`; anything else is
+/// reported as a hard blocker instead of failing later during class loading.
+pub const SUPPORTED_MINECRAFT_API: &[&str] = &[
+    "net.minecraft.core.Registry",
+    "net.minecraft.core.registries.Registries",
+    "net.minecraft.network.chat.Component",
+    "net.minecraft.resources.ResourceKey",
+    "net.minecraft.resources.ResourceLocation",
+    "net.minecraft.world.item.CreativeModeTab",
+    "net.minecraft.world.item.CreativeModeTab$Builder",
+    "net.minecraft.world.item.Item",
+    "net.minecraft.world.item.Item$Properties",
+    "net.minecraft.world.item.ItemStack",
+    "net.minecraft.world.level.block.Block",
+    "net.minecraft.world.level.block.Block$Properties",
+    "net.minecraft.world.level.block.state.BlockBehaviour",
+    "net.minecraft.world.level.block.state.BlockBehaviour$Properties",
 ];
 
 pub fn analyze(facts: &AnalysisFacts) -> CompatibilityReport {
@@ -283,18 +314,26 @@ pub fn analyze(facts: &AnalysisFacts) -> CompatibilityReport {
     }
 
     if !referenced_minecraft.is_empty() {
-        let count = referenced_minecraft.len();
-        blockers.push(
-            Blocker::new(
-                BlockerKind::MinecraftClasses,
-                Severity::Error,
-                format!(
-                    "references {count} Minecraft Java class{} that Horizon does not provide",
-                    if count == 1 { "" } else { "es" }
-                ),
-            )
-            .with_evidence(referenced_minecraft.iter().cloned()),
-        );
+        let supported_minecraft: BTreeSet<&str> = SUPPORTED_MINECRAFT_API.iter().copied().collect();
+        let unsupported_minecraft: Vec<String> = referenced_minecraft
+            .iter()
+            .filter(|class| !supported_minecraft.contains(class.as_str()))
+            .cloned()
+            .collect();
+        if !unsupported_minecraft.is_empty() {
+            let count = unsupported_minecraft.len();
+            blockers.push(
+                Blocker::new(
+                    BlockerKind::MinecraftClasses,
+                    Severity::Error,
+                    format!(
+                        "references {count} Minecraft Java class{} that Vibe's API subset does not provide",
+                        if count == 1 { "" } else { "es" }
+                    ),
+                )
+                .with_evidence(unsupported_minecraft),
+            );
+        }
     }
 
     let supported: BTreeSet<&str> = SUPPORTED_FORGE_API.iter().copied().collect();
@@ -354,7 +393,7 @@ pub fn analyze(facts: &AnalysisFacts) -> CompatibilityReport {
             Blocker::new(
                 BlockerKind::NestedJars,
                 Severity::Warning,
-                "contains nested jars (Jar-in-Jar); Vibe currently reports them but does not add them to the mod class loader",
+                "contains nested jars (Jar-in-Jar); Vibe extracts them into the mod class loader, but nested dependency version ranges are not resolved",
             )
             .with_evidence(facts.nested_jars.clone()),
         );
@@ -646,6 +685,38 @@ mod tests {
             .blockers
             .iter()
             .any(|b| b.kind == BlockerKind::MinecraftClasses));
+    }
+
+    #[test]
+    fn supported_minecraft_and_registry_api_does_not_block() {
+        let mut entry = class("com.example.ExampleMod", Some("examplemod"));
+        for supported in [
+            "net.minecraft.world.item.Item",
+            "net.minecraft.world.item.Item$Properties",
+            "net.minecraft.world.level.block.Block",
+            "net.minecraft.resources.ResourceLocation",
+            "net.minecraftforge.registries.DeferredRegister",
+            "net.minecraftforge.registries.RegistryObject",
+            "net.minecraftforge.registries.RegisterEvent",
+        ] {
+            entry.referenced_classes.insert(supported.into());
+        }
+        let facts = AnalysisFacts {
+            loader: Some(LoaderKind::JavaFml),
+            classes: vec![entry],
+            runtime_java_release: Some(17),
+            ..Default::default()
+        };
+        let report = analyze(&facts);
+        assert_eq!(report.verdict, Verdict::RunnableSubset);
+        assert!(!report
+            .blockers
+            .iter()
+            .any(|b| b.kind == BlockerKind::MinecraftClasses));
+        assert!(!report
+            .blockers
+            .iter()
+            .any(|b| b.kind == BlockerKind::UnsupportedForgeApi));
     }
 
     #[test]

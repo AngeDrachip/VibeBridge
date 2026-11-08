@@ -71,35 +71,55 @@ Exit criteria: a mod's declared target is reported, mixed or missing targets are
 refused rather than guessed, and the runtime never claims a backend it does not
 provide.
 
-## 0.4 - Expand the runtime subset carefully
+## 0.4.0 - Functional subset, multi-version profiles, tooling (done)
 
-Goal: support more Forge-shaped mods that do not touch Minecraft classes.
+Goal: move beyond event-only plumbing by implementing a real registry subset,
+loading nested JARs, broadening the profile matrix, and making the tool usable
+end to end.
 
-- [ ] Add lifecycle events only when their semantics can be represented
-      honestly (for example, a clearly documented synthetic server-start phase
-      if Vibe gains a meaningful server concept).
-- [ ] Support additional listener registration patterns used by event-only
-      mods.
-- [ ] Improve class-loader isolation and cycle diagnostics for multi-jar mods.
-- [ ] Expose a stable Rust embedding API with structured reports instead of
-      JSON-only results.
-- [ ] Add stress tests for timing, timeouts, malformed frames, and runtime
-      crashes.
+- [x] Functional Forge registries: `DeferredRegister`, `RegistryObject`,
+      `RegisterEvent`, `ForgeRegistries`, ordered in-memory registries.
+- [x] Real Minecraft data subset: `ResourceLocation`, `ResourceKey`, `Registry`,
+      `Item`, `ItemStack`, `Block`, `CreativeModeTab`, `Component`.
+- [x] A `register` lifecycle phase that materializes deferred entries.
+- [x] Nested-JAR extraction from `META-INF/jarjar/` and `META-INF/jars/`.
+- [x] Nested classes counted as provided during analysis.
+- [x] Eight embedded profiles spanning MC 1.12.2–26.3.
+- [x] Embedded compatibility database with evidence-based statuses.
+- [x] `vibe setup`, `vibe mods`, `vibe logs`, `vibe bench`, `vibe compat`.
+- [x] Run/crash logs from `vibe run`.
+- [x] Required installation, troubleshooting, compatibility, and first-launch
+      documentation.
 
-Exit criteria: every new API name appears in both implementation lists, has a
-compile-time fixture, and appears in `COMPATIBILITY.md`. No Minecraft class is
-implemented.
+Exit criteria: registries materialize in tests, nested JARs load in tests, every
+profile is unit-tested, and no compatibility claim lacks evidence. **Met.**
 
-## 0.5 - Horizon workflow integration
+## 0.5 - Real-mod validation and 1.0 Beta
+
+Goal: earn the right to call Vibe 1.0 Beta by testing real mods and a clean
+install.
+
+- [ ] Obtain legally redistributable third-party Forge jars across the required
+      categories and record exact results in `compat.toml`.
+- [ ] Demonstrate at least one mod with actual in-game functionality in a
+      running Horizon installation.
+- [ ] Test the installation guide from a clean Windows machine.
+- [ ] Verify Java, Horizon, original Forge JAR, MC/Forge version, and dependency
+      detection on that clean install.
+- [ ] Expand the Minecraft API subset only where real-mod tests justify it.
+- [ ] Publish `1.0.0-beta.1`, then `1.0.0` when all criteria are met.
+
+Exit criteria: every 1.0 Beta requirement in `docs/COMPATIBILITY.md` is backed
+by reproducible evidence. Until then, no 1.0 Beta release is published.
+
+## 0.6 - Horizon workflow integration
 
 Goal: reduce manual steps while staying on documented surfaces.
 
 - [ ] Adopt additional documented `horizon-ctl` commands as Horizon publishes
       them (deploy/install/query), with tests that skip cleanly when no game is
       running.
-- [ ] Detect and report a Horizon-managed game directory in `doctor`.
-- [ ] Add a dry-run mode that shows exactly what would be installed without
-      changing a game directory.
+- [ ] Detect and report a Horizon-managed game directory in `setup`/`doctor`.
 - [ ] Add bundle reproducibility checks (stable entry order, manifest hash).
 - [ ] Document a complete "export, install, verify" workflow.
 
@@ -118,9 +138,9 @@ Nothing in this section is a commitment.
 
 ## Explicit non-goals
 
-- Implementing Minecraft (`net.minecraft.*`) or a general Forge runtime.
-- Mixin transformation, coremods, access transformers, or nested-jar loading
-  without a separate design that can be tested.
+- Implementing Minecraft or a general Forge runtime. Vibe implements a small,
+  documented data/API subset, not the game.
+- Mixin transformation, coremods, or access transformers.
 - Running Java inside the Horizon process.
 - Guessing at Horizon internals or using private IPC.
 - Claiming that a fixture result proves third-party mod compatibility.

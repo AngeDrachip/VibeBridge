@@ -35,6 +35,7 @@ Windows (PowerShell):
 $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"
 powershell -NoProfile -ExecutionPolicy Bypass -File java\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\blocked\build.ps1
 $env:VIBE_REQUIRE_JAVA_TESTS = "1"
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -47,6 +48,7 @@ Linux / macOS:
 export JAVA_HOME=/path/to/jdk-17
 bash java/build.sh
 bash java/test-mods/build.sh
+bash java/test-mods/blocked/build.sh
 export VIBE_REQUIRE_JAVA_TESTS=1
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
@@ -61,9 +63,14 @@ Useful manual checks:
 
 ```powershell
 target\debug\vibe.exe doctor
+target\debug\vibe.exe setup
 target\debug\vibe.exe profiles
+target\debug\vibe.exe mods java\test-mods\build
+target\debug\vibe.exe compat
 target\debug\vibe.exe inspect java\test-mods\build
 target\debug\vibe.exe run java\test-mods\build --profile forge-1.21.1-52
+target\debug\vibe.exe bench --iterations 3 java\test-mods\build
+target\debug\vibe.exe logs --tail 40
 target\debug\vibe.exe horizon export java\test-mods\build\hello-forge.jar --output dist\hello-forge.hmod --force
 ```
 
@@ -86,16 +93,18 @@ A profile is a version target, not a compatibility claim. Before adding one to
 Never infer a profile from a mod's loader range alone, and never mark a profile
 supported because its metadata parses.
 
-## Adding Forge API surface
+## Adding Forge or Minecraft API surface
 
 Adding an API name is a compatibility promise. Do all of the following:
 
 1. Implement the clean-room class or method in `java/vibe-forge-api` and wire
    any runtime behavior in `java/vibe-runtime`.
 2. Add the exact class name to
-   `crates/vibe-core/src/analysis.rs::SUPPORTED_FORGE_API`.
+   `crates/vibe-core/src/analysis.rs::SUPPORTED_FORGE_API` (or
+   `SUPPORTED_MINECRAFT_API` for `net.minecraft.*`).
 3. Add the same name to
-   `java/vibe-runtime/src/main/java/dev/vibe/runtime/VibeRuntime.java::SUPPORTED_FORGE_API`.
+   `java/vibe-runtime/src/main/java/dev/vibe/runtime/VibeRuntime.java::SUPPORTED_FORGE_API`
+   when it is a Forge class.
 4. Add or extend a fixture under `java/test-mods` that compiles against the API
    and exercises the behavior.
 5. Add an assertion to the Rust integration test or Java-side behavior test.
@@ -107,6 +116,10 @@ Adding an API name is a compatibility promise. Do all of the following:
 Keep analysis conservative: a false `blocked` is recoverable with
 `--include-blocked` diagnostics; a false `runnable-subset` is a broken promise.
 
+Data-only Minecraft types (items, blocks, stacks, resource locations) are
+acceptable when they hold real data. Do not add a type that exists only to make
+a class reference resolve while silently doing nothing.
+
 ## Adding a fixture
 
 - Put it under `java/test-mods/<name>`.
@@ -116,6 +129,9 @@ Keep analysis conservative: a false `blocked` is recoverable with
 - Document what the fixture proves in `COMPATIBILITY.md`.
 - Add it to the relevant integration test path discovery if the test does not
   already consume the whole fixture directory.
+- For a nested-JAR fixture, bundle the dependency under `META-INF/jarjar/` and
+  reference a class that exists only in the nested archive, so the test fails if
+  extraction breaks.
 
 Fixtures must be readable, buildable, and free of copied third-party code.
 

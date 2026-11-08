@@ -1,13 +1,17 @@
 package dev.vibe.runtime;
 
 import java.io.File;
+import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.net.URL;
 import java.net.URLClassLoader;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.Enumeration;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -16,7 +20,11 @@ import java.util.jar.JarEntry;
 import java.util.jar.JarFile;
 
 import dev.vibe.runtime.json.Json;
+import net.minecraft.core.registries.Registries;
+import net.minecraft.resources.ResourceLocation;
 import net.minecraftforge.common.MinecraftForge;
+import net.minecraftforge.registries.RegisterEvent;
+import net.minecraftforge.registries.VibeRegistryManager;
 import net.minecraftforge.eventbus.api.Event;
 import net.minecraftforge.eventbus.api.IEventBus;
 import net.minecraftforge.fml.ModContainer;
@@ -44,6 +52,7 @@ public final class ModManager {
     private final List<VibeMod> mods = new ArrayList<>();
     private final Map<String, VibeMod> byId = new LinkedHashMap<>();
     private final List<LoadedJar> jars = new ArrayList<>();
+    private final List<Path> tempDirs = new ArrayList<>();
     private final VibeEventBus forgeBus = new VibeEventBus("forge");
     private String side = "SERVER";
     private String profile;
@@ -128,6 +137,24 @@ public final class ModManager {
                 invokeLegacy(mod, new FMLConstructionEvent());
             }
         }
+
+        // Forge posts one RegisterEvent per registry on each mod bus. Vibe does
+        // the same for the registries it really stores, then materializes any
+        // deferred entry whose mod did not subscribe to the event.
+        phase = "register";
+        List<ResourceLocation> registryNames = List.of(
+                Registries.ITEM.location(),
+                Registries.BLOCK.location(),
+                Registries.CREATIVE_MODE_TAB.location());
+        for (VibeMod mod : mods) {
+            if (mod.instance == null) {
+                continue;
+            }
+            for (ResourceLocation registryName : registryNames) {
+                post(mod, new RegisterEvent(registryName));
+            }
+        }
+        VibeRegistryManager.materializeAll();
 
         phase = "common_setup";
         for (VibeMod mod : mods) {
@@ -216,6 +243,7 @@ public final class ModManager {
                 "backend", backend,
                 "mods", ids,
                 "namespaces", namespaces,
+                "registries", VibeRegistryManager.snapshot(),
                 "event_records", allRecords());
     }
 
@@ -227,8 +255,14 @@ public final class ModManager {
             return loaded;
         }
         try {
+            List<URL> urls = new ArrayList<>();
+            urls.add(file.toURI().toURL());
+            // Forge bundles dependencies in META-INF/jarjar/; NeoForge and
+            // Fabric-style bundles use META-INF/jars/. Both are real nested
+            // archives that must be on the mod's class path.
+            urls.addAll(nestedJarUrls(file, loaded));
             URLClassLoader loader = new URLClassLoader(
-                    new URL[] {file.toURI().toURL()},
+                    urls.toArray(new URL[0]),
                     ModManager.class.getClassLoader());
             loaded.loader = loader;
             List<Class<?>> classes = new ArrayList<>();
@@ -284,6 +318,43 @@ public final class ModManager {
             failures.add(loaded.error);
         }
         return loaded;
+    }
+
+    /**
+     * Extract nested jars from a mod archive into per-archive temp directories.
+     * The temp directories are removed by {@link #reset()}.
+     */
+    private List<URL> nestedJarUrls(File file, LoadedJar loaded) {
+        List<URL> urls = new ArrayList<>();
+        try (JarFile jar = new JarFile(file)) {
+            Enumeration<JarEntry> entries = jar.entries();
+            while (entries.hasMoreElements()) {
+                JarEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (entry.isDirectory() || !name.endsWith(".jar")) {
+                    continue;
+                }
+                if (!name.startsWith("META-INF/jarjar/") && !name.startsWith("META-INF/jars/")) {
+                    continue;
+                }
+                try {
+                    Path dir = Files.createTempDirectory("vibe-nested-");
+                    tempDirs.add(dir);
+                    String fileName = name.substring(name.lastIndexOf('/') + 1);
+                    Path target = dir.resolve(fileName);
+                    try (InputStream input = jar.getInputStream(entry)) {
+                        Files.copy(input, target, StandardCopyOption.REPLACE_EXISTING);
+                    }
+                    urls.add(target.toUri().toURL());
+                    loaded.nestedJars.add(name);
+                } catch (Exception nested) {
+                    loaded.warnings.add("could not extract nested jar " + name + ": " + nested);
+                }
+            }
+        } catch (Exception ignored) {
+            // The main archive scan reports unreadable jars.
+        }
+        return urls;
     }
 
     private void construct(VibeMod mod) {
@@ -477,6 +548,10 @@ public final class ModManager {
     }
 
     private void reset() {
+        for (Path dir : tempDirs) {
+            deleteRecursively(dir);
+        }
+        tempDirs.clear();
         mods.clear();
         byId.clear();
         jars.clear();
@@ -484,6 +559,21 @@ public final class ModManager {
         phase = "new";
         profile = null;
         backend = null;
+        VibeRegistryManager.reset();
+    }
+
+    private static void deleteRecursively(Path dir) {
+        try (var stream = Files.walk(dir)) {
+            stream.sorted(Comparator.reverseOrder()).forEach(path -> {
+                try {
+                    Files.deleteIfExists(path);
+                } catch (Exception ignored) {
+                    // Best effort cleanup; a leftover temp file is not fatal.
+                }
+            });
+        } catch (Exception ignored) {
+            // Best effort cleanup.
+        }
     }
 
     private static Throwable unwrap(Throwable throwable) {
@@ -579,6 +669,7 @@ public final class ModManager {
         private final List<String> modIds = new ArrayList<>();
         private final List<String> classErrors = new ArrayList<>(0);
         private final List<String> warnings = new ArrayList<>();
+        private final List<String> nestedJars = new ArrayList<>();
         private String error;
 
         private LoadedJar(Path path) {
@@ -591,6 +682,7 @@ public final class ModManager {
             map.put("class_count", classCount);
             map.put("entrypoints", new ArrayList<>(entrypoints));
             map.put("mod_ids", new ArrayList<>(modIds));
+            map.put("nested_jars_loaded", new ArrayList<>(nestedJars));
             map.put("warnings", new ArrayList<>(warnings));
             map.put("class_errors", classErrors.size() > 50
                     ? new ArrayList<>(classErrors.subList(0, 50))

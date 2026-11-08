@@ -1,0 +1,17 @@
+modLoader = "javafml"
+loaderVersion = "[52,53)"
+license = "MIT"
+
+[[mods]]
+modId = "registry_demo"
+version = "0.1.0"
+displayName = "Registry Demo"
+description = "Vibe registry fixture: deferred items, blocks, and creative tabs."
+authors = "Vibe Tests"
+
+[[dependencies.registry_demo]]
+modId = "minecraft"
+mandatory = true
+versionRange = "[1.21.1,1.22)"
+ordering = "NONE"
+side = "BOTH"

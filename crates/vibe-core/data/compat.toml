@@ -1,0 +1,130 @@
+# Vibe compatibility database.
+#
+# Every entry states what was actually tested. Statuses:
+#   FULL          all tested features work
+#   HIGH          most tested features work
+#   PARTIAL       some tested features work
+#   CONTENT_ONLY  only compatible data/assets are available
+#   BLOCKED       cannot currently run
+#   UNKNOWN       not sufficiently tested
+#
+# Fixture entries are clean-room jars built by this repository, not third-party
+# mods. Third-party entries stay UNKNOWN until a real jar has been tested in a
+# real environment; do not promote them from inspection alone.
+
+schema = 1
+
+[[entries]]
+id = "hello_forge"
+name = "Hello Forge (Vibe fixture)"
+category = "integration"
+minecraft = "1.21.1"
+forge = "52.x"
+status = "FULL"
+evidence = "Automated runtime test: modern constructor, typed and reflective listeners, lifecycle, and event records."
+notes = "Clean-room fixture, not a third-party mod."
+
+[[entries]]
+id = "legacy_hello"
+name = "Legacy Hello (Vibe fixture)"
+category = "integration"
+minecraft = "1.21.1"
+forge = "52.x"
+status = "FULL"
+evidence = "Automated runtime test: legacy @Mod.EventHandler lifecycle and construction event."
+notes = "Clean-room fixture, not a third-party mod."
+
+[[entries]]
+id = "registry_demo"
+name = "Registry Demo (Vibe fixture)"
+category = "integration"
+minecraft = "1.21.1"
+forge = "52.x"
+status = "FULL"
+evidence = "Automated runtime test: DeferredRegister entries materialize in the item, block, and creative-tab registries."
+notes = "Clean-room fixture proving the functional registry subset."
+
+[[entries]]
+id = "nested_demo"
+name = "Nested Demo (Vibe fixture)"
+category = "integration"
+minecraft = "1.21.1"
+forge = "52.x"
+status = "FULL"
+evidence = "Automated runtime test: a class from META-INF/jarjar/nested-lib.jar loads and runs from the mod class loader."
+notes = "Clean-room fixture proving nested-JAR extraction."
+
+# The entries below are representative third-party mods from the required test
+# categories. They have NOT been tested in this build environment because no
+# legally obtained third-party jars or running Horizon installation are
+# available. They remain UNKNOWN by design.
+
+[[entries]]
+id = "jei"
+name = "Just Enough Items"
+category = "inventory"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "embeddium"
+name = "Embeddium"
+category = "performance"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "journeymap"
+name = "JourneyMap"
+category = "maps"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "create"
+name = "Create"
+category = "technology"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "botania"
+name = "Botania"
+category = "magic"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "twilightforest"
+name = "The Twilight Forest"
+category = "worldgen"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "appleskin"
+name = "AppleSkin"
+category = "utility"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "chipped"
+name = "Chipped"
+category = "decoration"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "geckolib"
+name = "GeckoLib"
+category = "library"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."
+
+[[entries]]
+id = "spark"
+name = "spark"
+category = "server"
+status = "UNKNOWN"
+evidence = "Not tested in this environment; no third-party jar available."

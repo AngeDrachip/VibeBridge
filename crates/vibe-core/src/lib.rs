@@ -6,6 +6,7 @@
 
 pub mod analysis;
 pub mod classfile;
+pub mod compat;
 pub mod config;
 pub mod error;
 pub mod ids;
@@ -17,6 +18,7 @@ pub use analysis::{
     analyze, AnalysisFacts, Blocker, BlockerKind, CompatibilityReport, EvidenceGroup, Severity,
     Verdict,
 };
+pub use compat::{CompatDatabase, CompatEntry, CompatStatus, EMBEDDED_COMPAT};
 pub use error::{Result, VibeError};
 pub use ids::{ModId, ResourceLocation};
 pub use metadata::{Dependency, LoaderKind, MetadataSource, ModFileMetadata, ModMetadata, ModSide};
