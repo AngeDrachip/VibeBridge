@@ -18,6 +18,24 @@ Horizon through Horizon's documented content-mod format.
 
 Current release: **1.0.0-beta.1** (Horizon integration, functional registry subset, nested JARs, multi-version profiles, setup/logging/benchmark tooling).
 
+## Install, then drop Forge mods in `mods/`
+
+Download `vibe-1.0.0-beta.1-windows-x86_64.zip` from
+[the latest release](https://github.com/AngeDrachip/VibeBridge/releases/latest),
+unpack it, and run:
+
+```powershell
+.\vibe.exe doctor          # Java, bundled runtime, Horizon
+.\vibe.exe setup           # mods/, mods-disabled/, logs/
+Copy-Item .\SomeForgeMod.jar .\mods\
+.\vibe.exe run mods        # load the jars you dropped in directly
+```
+
+The zip bundles `java/build/vibe-runtime.jar`, so no source checkout is needed.
+Vibe reads each jar read-only and reports blocked mods with evidence. Horizon
+itself cannot execute Java; `vibe horizon export` turns a jar's assets and data
+into a `.hmod` Horizon can load.
+
 ## What Vibe does
 
 - **Discovers and inspects** Forge jars and directories read-only. It parses

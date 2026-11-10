@@ -5,10 +5,30 @@ original Forge jars, run a small clean-room Forge API subset in a real JVM, and
 export assets/data as a Horizon content mod. It does not make Horizon execute
 Java gameplay code, and most real Forge mods are still blocked or untested.
 
-If you only want the binary, download
-`vibe-1.0.0-beta.1-windows-x86_64.zip` from
-[the v1.0.0-beta.1 release](https://github.com/AngeDrachip/VibeBridge/releases/tag/v1.0.0-beta.1),
-unpack it, and run `vibe doctor`. The steps below build from source.
+## Install and drop Forge mods (binary)
+
+Download `vibe-1.0.0-beta.1-windows-x86_64.zip` from
+[the v1.0.0-beta.1 release](https://github.com/AngeDrachip/VibeBridge/releases/latest),
+unpack it anywhere, then:
+
+```powershell
+# Check Java, the bundled runtime, and Horizon.
+.\vibe.exe doctor
+
+# Create mods/, mods-disabled/, and logs/ if they are missing.
+.\vibe.exe setup
+
+# Drop any Forge jar into mods/, then run them directly.
+Copy-Item .\SomeForgeMod.jar .\mods\
+.\vibe.exe run mods
+```
+
+The zip ships `java/build/vibe-runtime.jar`, so `vibe run` works without a
+source checkout. `vibe run mods` inspects every jar in `mods/` read-only and
+runs the Forge API subset it supports. It reports blocked mods with evidence
+instead of pretending they ran.
+
+The steps below build from source.
 
 If you want the long version, start with
 [docs/INSTALLATION.md](docs/INSTALLATION.md). This file is the short path.

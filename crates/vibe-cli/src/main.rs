@@ -2291,13 +2291,28 @@ fn render_run_log(report: &Value) -> String {
 }
 
 fn resolve_runtime(explicit: Option<PathBuf>) -> Option<PathBuf> {
-    explicit
-        .or_else(|| {
-            std::env::var_os("VIBE_RUNTIME_JAR")
-                .filter(|value| !value.is_empty())
-                .map(PathBuf::from)
-        })
-        .or_else(|| default_runtime_path(&repo_root()))
+    if let Some(path) = explicit {
+        return Some(path);
+    }
+    if let Some(value) = std::env::var_os("VIBE_RUNTIME_JAR").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(value));
+    }
+    // A released `vibe.exe` is unpacked anywhere; look beside it first, then
+    // one level up (the zip keeps the runtime at java/build/vibe-runtime.jar).
+    // The build-time repository path is only a fallback for `cargo run`.
+    let mut roots = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+            if let Some(parent) = dir.parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+    roots.push(repo_root());
+    roots
+        .into_iter()
+        .find_map(|root| default_runtime_path(&root))
 }
 
 fn repo_root() -> PathBuf {

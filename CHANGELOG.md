@@ -38,9 +38,18 @@ ships a working `.hmod` content bundle as a release artifact.
 ### Changed
 
 - README documents the beta status and the new `vibe horizon connect` command.
+- The release zip is self-contained: it ships `java/build/vibe-runtime.jar`, so
+  `vibe run` works from any folder without a source checkout.
 - `horizon-ctl` discovery prefers a launcher install that has prepared game
   files, so a newer but unprepared install no longer hides the one that can
   actually start the game.
+
+### Fixed
+
+- `vibe run` looked for the Java runtime at the build machine's source path, so
+  a downloaded `vibe.exe` could not run mods. It now looks beside the executable
+  first, then one level up, and only falls back to the source tree.
+- The Java runtime reported version 0.4.0 in a 1.0.0-beta.1 build.
 
 ### Fixed
 
