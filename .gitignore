@@ -15,6 +15,7 @@
 /horizon-mods/
 /dist/
 /test-output/
+/.horizon-home/
 
 # Editors
 .idea/

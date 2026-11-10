@@ -159,6 +159,10 @@ fn launcher_ctl() -> Option<PathBuf> {
 
 /// Discover `horizon-ctl` under one launcher root. Kept separate so tests can
 /// point at a temporary directory.
+///
+/// An install that has prepared game files for [`HORIZON_GAME_VERSION`] is
+/// preferred: one that does not cannot start the game at all. Among prepared
+/// installs the launcher's selected version wins, then the newest one.
 fn launcher_ctl_in(launcher_root: &Path) -> Option<PathBuf> {
     let versions = launcher_root.join("versions");
     if !versions.is_dir() {
@@ -168,40 +172,52 @@ fn launcher_ctl_in(launcher_root: &Path) -> Option<PathBuf> {
         .ok()
         .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
         .and_then(|value| {
+            // The launcher writes `selected`; older builds wrote
+            // `selected_version`. Accept either.
             value
                 .get("selected_version")
+                .or_else(|| value.get("selected"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         });
-    if let Some(tag) = selected {
-        for name in executable_names("horizon-ctl") {
-            let candidate = versions.join(&tag).join(name);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
 
-    let mut found: Vec<(std::time::SystemTime, PathBuf)> = Vec::new();
+    let mut found: Vec<(bool, bool, std::time::SystemTime, PathBuf)> = Vec::new();
     let entries = std::fs::read_dir(&versions).ok()?;
     for entry in entries.flatten() {
         let dir = entry.path();
         if !dir.is_dir() {
             continue;
         }
-        for name in executable_names("horizon-ctl") {
-            let candidate = dir.join(name);
-            if candidate.is_file() {
-                let modified = candidate
-                    .metadata()
-                    .and_then(|metadata| metadata.modified())
-                    .unwrap_or(std::time::UNIX_EPOCH);
-                found.push((modified, candidate));
-            }
-        }
+        let Some(tag) = dir.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(candidate) = executable_names("horizon-ctl")
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+        else {
+            continue;
+        };
+        let prepared = dir
+            .join(".local")
+            .join("horizon-client")
+            .join(HORIZON_GAME_VERSION)
+            .join("horizon-resources.json")
+            .is_file();
+        let is_selected = selected.as_deref() == Some(tag);
+        let modified = candidate
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .unwrap_or(std::time::UNIX_EPOCH);
+        found.push((!prepared, !is_selected, modified, candidate));
     }
-    found.sort_by(|left, right| right.0.cmp(&left.0));
-    found.into_iter().map(|(_, path)| path).next()
+    found.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then(left.1.cmp(&right.1))
+            .then(right.2.cmp(&left.2))
+    });
+    found.into_iter().map(|(_, _, _, path)| path).next()
 }
 
 /// The launcher release tag that owns `horizon-ctl`, when it lives under a
@@ -688,6 +704,7 @@ pub fn validate_content_bundle(path: &Path) -> Result<BundleValidation> {
         .map_err(|error| VibeError::Archive(format!("{}: {error}", path.display())))?;
 
     let mut names = Vec::new();
+    let mut entry_indices: Vec<usize> = Vec::new();
     let mut manifest_text = None;
     let mut total_bytes = 0u64;
     let mut errors = Vec::new();
@@ -727,10 +744,12 @@ pub fn validate_content_bundle(path: &Path) -> Result<BundleValidation> {
             } else {
                 let mut text = String::new();
                 entry.read_to_string(&mut text)?;
+                strip_utf8_bom(&mut text);
                 manifest_text = Some(text);
             }
         }
         names.push(name);
+        entry_indices.push(index);
     }
 
     if names.len() > MAX_FILES {
@@ -896,7 +915,7 @@ pub fn validate_content_bundle(path: &Path) -> Result<BundleValidation> {
 
     let mut block_definitions = 0;
     let mut item_definitions = 0;
-    for entry_name in &names {
+    for (entry_name, entry_index) in names.iter().zip(entry_indices.iter()) {
         if entry_name == MANIFEST_NAME {
             continue;
         }
@@ -965,12 +984,13 @@ pub fn validate_content_bundle(path: &Path) -> Result<BundleValidation> {
             };
             if let Some((kind, count)) = kind {
                 *count += 1;
-                match archive.by_name(entry_name) {
+                match archive.by_index(*entry_index) {
                     Ok(mut entry) => {
                         let mut text = String::new();
                         if let Err(error) = entry.read_to_string(&mut text) {
                             errors.push(format!("{entry_name} could not be read: {error}"));
                         } else {
+                            strip_utf8_bom(&mut text);
                             match serde_json::from_str::<serde_json::Value>(&text) {
                                 Ok(serde_json::Value::Object(object)) => {
                                     match object.get("template").and_then(|v| v.as_str()) {
@@ -1093,6 +1113,14 @@ pub fn install_content_bundle(
         sha256: validation.sha256.clone(),
         validation,
     })
+}
+
+/// Drop a UTF-8 byte-order mark. Windows editors and `Set-Content -Encoding
+/// utf8` write one; TOML and JSON parsers reject it.
+fn strip_utf8_bom(text: &mut String) {
+    if text.starts_with('\u{feff}') {
+        text.replace_range(0..'\u{feff}'.len_utf8(), "");
+    }
 }
 
 fn manifest_string(
@@ -2125,6 +2153,53 @@ typo = "refused"
     }
 
     #[test]
+    fn validation_reads_declarations_from_a_windows_written_zip() {
+        // Some Windows tools (Compress-Archive among them) store entry names
+        // with backslashes. Validation normalizes the name, so it must read the
+        // declaration by entry index rather than by the normalized name.
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("windows.hmod");
+        write_zip(
+            &bundle,
+            &[
+                (
+                    MANIFEST_NAME,
+                    b"id = \"content_mod\"\nversion = \"1\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+                ),
+                (
+                    "data\\content_mod\\horizon\\item\\ruby.json",
+                    br#"{"template": "minecraft:iron_ingot"}"#,
+                ),
+            ],
+        );
+        let report = validate_content_bundle(&bundle).unwrap();
+        assert_eq!(report.item_definitions, 1);
+        assert!(report.valid, "{:?}", report.errors);
+    }
+
+    #[test]
+    fn validation_tolerates_a_utf8_byte_order_mark() {
+        let temp = tempfile::tempdir().unwrap();
+        let bundle = temp.path().join("bom.hmod");
+        write_zip(
+            &bundle,
+            &[
+                (
+                    MANIFEST_NAME,
+                    b"\xEF\xBB\xBFid = \"content_mod\"\nversion = \"1\"\napi = \"0.2\"\nside = \"both\"\ncapabilities = [\"registries\"]\n",
+                ),
+                (
+                    "data/content_mod/horizon/item/ruby.json",
+                    b"\xEF\xBB\xBF{\"template\": \"minecraft:iron_ingot\"}",
+                ),
+            ],
+        );
+        let report = validate_content_bundle(&bundle).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.item_definitions, 1);
+    }
+
+    #[test]
     fn validation_reads_block_and_item_declarations() {
         let temp = tempfile::tempdir().unwrap();
         let bundle = temp.path().join("content.hmod");
@@ -2245,6 +2320,52 @@ typo = "refused"
 
         let found = launcher_ctl_in(&root).unwrap();
         assert_eq!(found, new.join(exe_name("horizon-ctl")));
+    }
+
+    #[test]
+    fn launcher_discovery_reads_the_selected_key_without_suffix() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("horizon-launcher");
+        let versions = root.join("versions");
+        let old = versions.join("v0.2.50");
+        let new = versions.join("v0.2.97");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join(exe_name("horizon-ctl")), b"").unwrap();
+        std::fs::write(new.join(exe_name("horizon-ctl")), b"").unwrap();
+        std::fs::write(root.join("settings.json"), br#"{"selected":"v0.2.50"}"#).unwrap();
+
+        let found = launcher_ctl_in(&root).unwrap();
+        assert_eq!(found, old.join(exe_name("horizon-ctl")));
+    }
+
+    #[test]
+    fn launcher_discovery_prefers_an_install_with_prepared_game_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("horizon-launcher");
+        let versions = root.join("versions");
+        let prepared = versions.join("v0.2.97");
+        let nightly = versions.join("nightly-2026-11-07");
+        std::fs::create_dir_all(&prepared).unwrap();
+        std::fs::create_dir_all(&nightly).unwrap();
+        std::fs::write(prepared.join(exe_name("horizon-ctl")), b"").unwrap();
+        std::fs::write(nightly.join(exe_name("horizon-ctl")), b"").unwrap();
+        let resources = prepared
+            .join(".local")
+            .join("horizon-client")
+            .join(HORIZON_GAME_VERSION);
+        std::fs::create_dir_all(&resources).unwrap();
+        std::fs::write(resources.join("horizon-resources.json"), b"{}").unwrap();
+        // The launcher selects the nightly, but it has no prepared game files,
+        // so it could not start the game at all.
+        std::fs::write(
+            root.join("settings.json"),
+            br#"{"selected":"nightly-2026-11-07"}"#,
+        )
+        .unwrap();
+
+        let found = launcher_ctl_in(&root).unwrap();
+        assert_eq!(found, prepared.join(exe_name("horizon-ctl")));
     }
 
     #[test]
