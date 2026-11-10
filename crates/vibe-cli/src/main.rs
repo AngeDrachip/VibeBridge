@@ -14,7 +14,8 @@ use clap::{Args, Parser, Subcommand};
 use serde_json::{json, Value};
 
 use vibe_bridge::{
-    default_runtime_path, detect_all_java, locate_java, RuntimeClient, RuntimeOptions,
+    bundled_java_root, default_runtime_path, detect_all_java, locate_java, RuntimeClient,
+    RuntimeOptions,
 };
 use vibe_core::error::{Result, VibeError};
 use vibe_core::metadata::ModSide;
@@ -371,6 +372,7 @@ fn execute(cli: Cli) -> Result<u8> {
 fn doctor(args: DoctorArgs, json: bool) -> Result<u8> {
     let selected = locate_java(args.java.as_deref());
     let installations = detect_all_java();
+    let bundled = bundled_java_root();
     let runtime = resolve_runtime(args.runtime);
     let horizon = probe(args.ctl.as_deref());
 
@@ -380,6 +382,9 @@ fn doctor(args: DoctorArgs, json: bool) -> Result<u8> {
             "version": java.version,
             "major": java.major,
             "vendor": java.vendor,
+            "bundled": bundled
+                .as_ref()
+                .is_some_and(|root| java.executable.starts_with(root)),
         }),
         Err(error) => json!({ "error": error.to_string() }),
     };
@@ -405,10 +410,18 @@ fn doctor(args: DoctorArgs, json: bool) -> Result<u8> {
         println!("Vibe doctor");
         match &selected {
             Ok(java) => println!(
-                "  Java:    {} (Java {}, {})",
+                "  Java:    {} (Java {}, {}){}",
                 java.executable.display(),
                 java.version,
-                java.vendor
+                java.vendor,
+                if bundled
+                    .as_ref()
+                    .is_some_and(|root| java.executable.starts_with(root))
+                {
+                    " [bundled, optimized]"
+                } else {
+                    ""
+                }
             ),
             Err(error) => println!("  Java:    NOT USABLE — {error}"),
         }

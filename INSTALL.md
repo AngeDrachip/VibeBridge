@@ -23,10 +23,11 @@ Copy-Item .\SomeForgeMod.jar .\mods\
 .\vibe.exe run mods
 ```
 
-The zip ships `java/build/vibe-runtime.jar`, so `vibe run` works without a
-source checkout. `vibe run mods` inspects every jar in `mods/` read-only and
-runs the Forge API subset it supports. It reports blocked mods with evidence
-instead of pretending they ran.
+The zip ships `java/build/vibe-runtime.jar` and an optimized JRE at
+`java/runtime/`, so `vibe run` works without a source checkout and without Java
+installed. `vibe run mods` inspects every jar in `mods/` read-only and runs the
+Forge API subset it supports. It reports blocked mods with evidence instead of
+pretending they ran.
 
 ## Or install Vibe as a Horizon native mod
 
@@ -39,8 +40,9 @@ automatically and `/vibe` commands answer in chat.
    instance's `horizon-native-mods/` folder), accept the native-code warning,
    then press **Build**.
 2. Unpack this release zip inside the instance folder (the one holding
-   `options.txt`, usually `%APPDATA%\horizon`). You need
-   `vibe\vibe.exe` and `vibe\java\build\vibe-runtime.jar` there.
+   `options.txt`, usually `%APPDATA%\horizon`). You need `vibe\vibe.exe`,
+   `vibe\java\build\vibe-runtime.jar` and `vibe\java\runtime\` there. The native
+   mod hands that bundled JRE to the sidecar, so no Java install is needed.
 3. Put Forge jars in `<instance>\vibe\mods\` and start a world.
 4. In chat: `/vibe status`, `/vibe mods`, `/vibe reload`, `/vibe help`.
 
@@ -55,8 +57,10 @@ If you want the long version, start with
 ## What you need
 
 - Windows 10/11 or a modern Linux distribution.
-- A **JDK 17 or newer**. Vibe compiles and runs its Java sidecar with
-  `--release 17`. Java 8 is not enough.
+- **Nothing else to run a release:** the zip bundles an optimized JRE.
+- To build from source: a **JDK 17 or newer**. Vibe compiles its Java sidecar
+  with `--release 17`. Java 8 is not enough. The runtime build also needs
+  `jlink` and the JDK's `jmods`.
 - Rust 1.85+ only if you build Vibe from source.
 - Optional: a Horizon installation with `horizon-ctl` if you want to probe the
   game and install content bundles.
@@ -75,6 +79,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File java\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\blocked\build.ps1
 
+# Build the optimized JRE that ships beside the exe.
+powershell -NoProfile -ExecutionPolicy Bypass -File java\build-runtime.ps1
+
 # Build the CLI.
 cargo build --release
 
@@ -92,6 +99,7 @@ export JAVA_HOME=/path/to/jdk-17
 bash java/build.sh
 bash java/test-mods/build.sh
 bash java/test-mods/blocked/build.sh
+bash java/build-runtime.sh
 cargo build --release
 
 ./target/release/vibe setup

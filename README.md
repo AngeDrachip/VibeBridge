@@ -31,10 +31,12 @@ Copy-Item .\SomeForgeMod.jar .\mods\
 .\vibe.exe run mods        # load the jars you dropped in directly
 ```
 
-The zip bundles `java/build/vibe-runtime.jar`, so no source checkout is needed.
-Vibe reads each jar read-only and reports blocked mods with evidence. Horizon
-itself cannot execute Java; `vibe horizon export` turns a jar's assets and data
-into a `.hmod` Horizon can load.
+The zip bundles `java/build/vibe-runtime.jar` **and an optimized JRE** at
+`java/runtime/` (a jlink image, ~50 MB, with a CDS archive), so `vibe run` works
+without any Java installed. `--java` wins, then `VIBE_JAVA`, then the bundled
+runtime, then `JAVA_HOME`, then `PATH`. Vibe reads each jar read-only and reports
+blocked mods with evidence. Horizon itself cannot execute Java; `vibe horizon
+export` turns a jar's assets and data into a `.hmod` Horizon can load.
 
 ### From inside Horizon: the `.hnmod` native mod
 
@@ -47,8 +49,9 @@ itself and chat gains `/vibe status`, `/vibe mods`, `/vibe start`, `/vibe stop`,
    GitHub** → `https://github.com/AngeDrachip/VibeBridge`, or the
    `horizon-native-mods/` folder), then **Build**.
 2. Unpack the release zip inside the instance folder (the one holding
-   `options.txt`, usually `%APPDATA%\horizon`), so `vibe\vibe.exe` and
-   `vibe\java\build\vibe-runtime.jar` exist.
+   `options.txt`, usually `%APPDATA%\horizon`), so `vibe\vibe.exe`,
+   `vibe\java\build\vibe-runtime.jar` and `vibe\java\runtime\` exist. The native
+   mod points the sidecar at that bundled JRE, so no Java install is needed.
 3. Drop Forge jars in `<instance>\vibe\mods\` and open a world.
 
 This removes the manual `vibe run` step; it does not move Java into Horizon's
@@ -112,13 +115,18 @@ See [COMPATIBILITY.md](COMPATIBILITY.md) for the exact implemented surface and
 ## Requirements
 
 - Rust 1.85 or newer (edition 2021).
-- A JDK 17 or newer. Vibe compiles and runs its Java sidecar with `--release 17`.
+- **To run a release:** nothing else. The zip bundles an optimized JRE.
+- **To build from source:** a JDK 17 or newer. Vibe compiles its Java sidecar
+  with `--release 17`; `java/build-runtime.ps1` (or `.sh`) also needs `jlink`
+  and the JDK's `jmods` to produce the bundled runtime.
 - Optional: a Horizon installation with `horizon-ctl` for `vibe horizon probe`
   and `vibe horizon connect`. Export works without a running game; `vibe horizon
   connect` needs one to answer with ready state.
 
 On Windows, make sure `JAVA_HOME` points at JDK 17+ before building. A Java 8
-`javac` earlier on `PATH` is rejected.
+`javac` earlier on `PATH` is rejected. The runtime script picks the newest
+installed JDK for `jlink` (CDS needs JDK 19+); set `VIBE_RUNTIME_JDK` to force
+one.
 
 ## Build
 
@@ -126,6 +134,7 @@ On Windows, make sure `JAVA_HOME` points at JDK 17+ before building. A Java 8
 # Windows
 $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.20.101-hotspot"
 powershell -NoProfile -ExecutionPolicy Bypass -File java\build.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File java\build-runtime.ps1   # java/runtime
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\build.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File java\test-mods\blocked\build.ps1
 cargo build --release
@@ -135,10 +144,15 @@ cargo build --release
 # Linux / macOS
 export JAVA_HOME=/path/to/jdk-17
 bash java/build.sh
+bash java/build-runtime.sh   # java/runtime
 bash java/test-mods/build.sh
 bash java/test-mods/blocked/build.sh
 cargo build --release
 ```
+
+`java/runtime` is a jlink image of ~50 MB with one CDS archive; it is built
+locally, not committed. `python tools/package_release.py` packs `vibe.exe`, the
+runtime jar, that JRE and the docs into the release zip.
 
 The binary is `target/release/vibe` (`target\release\vibe.exe` on Windows).
 
@@ -199,8 +213,10 @@ Every command accepts `--json` for machine-readable output.
 
 | Variable | Effect |
 | --- | --- |
-| `JAVA_HOME` | Preferred JDK/JRE when `--java` is not passed. |
-| `VIBE_JAVA` | Explicit Java executable or home; takes precedence over `JAVA_HOME`. |
+| `VIBE_JAVA` | Explicit Java executable or home; takes precedence over the bundled runtime. |
+| `VIBE_BUNDLED_JAVA` | Override where `vibe` looks for the bundled JRE (default: `java/runtime` beside the exe). |
+| `VIBE_JAVA_ARGS` | Extra JVM flags appended after Vibe's startup defaults (C1-only JIT, serial GC, CDS). |
+| `JAVA_HOME` | Fallback JDK/JRE when `--java` and `VIBE_JAVA` are unset and no bundled runtime exists. |
 | `VIBE_RUNTIME_JAR` | Vibe runtime jar or classes directory; used when `--runtime` is not passed. |
 | `VIBE_HORIZON_CTL` / `HORIZON_CTL` | Explicit `horizon-ctl` executable or folder. |
 | `VIBE_REQUIRE_JAVA_TESTS` | Set to `1` to make integration tests fail instead of skip when Java or fixtures are missing. |

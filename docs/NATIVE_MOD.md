@@ -47,6 +47,7 @@ and `horizon-mods/`, usually `%APPDATA%\horizon`), so that:
   vibe/
     vibe.exe                      from vibe-1.0.0-beta.1-windows-x86_64.zip
     java/build/vibe-runtime.jar   from the same zip
+    java/runtime/                 the optimized JRE from the same zip
     mods/                         put your Forge jars here
     logs/                         created on first start
   horizon-mods/                   .hmod content exported by /vibe export
@@ -55,7 +56,13 @@ and `horizon-mods/`, usually `%APPDATA%\horizon`), so that:
 `VIBE_EXE` overrides the executable path if you keep Vibe elsewhere. The mod
 also looks beside `horizon-client.exe` and on `PATH`.
 
-A JDK/JRE 17+ must be installed; the zip bundles Vibe's runtime jar, not a JDK.
+When `<instance>/vibe/java/runtime/` exists, the mod sets `VIBE_JAVA` to it, so
+the sidecar uses the bundled JRE and no system Java is needed. Remove that folder
+and the sidecar falls back to `VIBE_JAVA`, then `JAVA_HOME`, then `PATH`.
+
+A `.hnmod` is source-only by design (Horizon compiles it into the game), so it
+cannot embed a JRE. The release zip carries `java/runtime/` beside the mod's
+files; that is why the Vibe folder has to be unpacked in the instance.
 
 ## Install
 
@@ -80,12 +87,14 @@ builds reuse the cache.
 - `cargo build --locked -p horizon-client --bin horizon-client --profile fast`
   succeeds, and the built game was driven with `horizon-ctl` on prepared 26.3
   resources.
-- Opening `VibeProof` started the sidecar; its log reports
-  `Vibe runtime: vibe-runtime/1.0.0-beta.1 (Java 27)`, profile
+- Opening `VibeProof` started the sidecar from the release layout **with no
+  system Java used**: the mod found `vibe/java/runtime/`, set `VIBE_JAVA`, and the
+  run log reports `java.home` = `<instance>/vibe/java/runtime`; the sidecar
+  reports `Vibe runtime: vibe-runtime/1.0.0-beta.1 (Java 27)`, profile
   `forge-1.21.1-52`, one loaded entrypoint (`hello_forge`) and
   `lifecycle: phase=complete, ok=true`, 4/4 event records.
-- `/vibe status` reported the finished sidecar (exit 0), the jar count, the exe
-  and log paths, and the useful log lines.
+- `/vibe status` reported the finished sidecar (exit 0), the jar count, the exe,
+  `Java: <instance>\vibe\java\runtime (bundled, optimized)`, and the log lines.
 - `/vibe mods`, `/vibe help`, `/vibe reload` and `/vibe export` worked;
   `/vibe export` wrote `horizon-mods/hello-forge.hmod` (730 bytes).
 - The packaged `.hnmod` is accepted by Horizon's own reader,

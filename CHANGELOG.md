@@ -21,9 +21,26 @@ All notable changes to Vibe are documented here. The format follows
   remaining limit (Java runs in the sidecar, not in Horizon's world).
 - `tools/package_hnmod.py`: deterministic `.hnmod` packager (fixed dates and
   modes, so the same sources give the same SHA-256).
+- **Bundled optimized JRE.** The release zip now ships a jlink image at
+  `java/runtime/` (Java 27 base, ~50 MB, one CDS archive), so `vibe run` and the
+  `.hnmod` sidecar need no Java installed. `java/build-runtime.ps1` and
+  `java/build-runtime.sh` build it: only the modules Vibe and Forge mods use,
+  debug attributes stripped, CDS generated, unused CDS variants and `.lib` stubs
+  pruned. Startup is ~78 ms with CDS versus ~131 ms without, and ~180 ms total
+  for a five-jar lifecycle versus ~248 ms without CDS.
+- `tools/package_release.py`: deterministic release zip (exe, runtime jar, JRE,
+  docs, `mods/` placeholder) with fixed dates and sorted entries.
+- `VIBE_BUNDLED_JAVA` overrides the bundled-runtime location; `vibe doctor`
+  marks the selected runtime `[bundled, optimized]`.
 
 ### Changed
 
+- Java discovery is now `--java`, `VIBE_JAVA`, the bundled `java/runtime`, then
+  `JAVA_HOME` and `PATH`, so a release never depends on the machine's Java.
+- The sidecar JVM starts with `-XX:TieredStopAtLevel=1 -XX:+UseSerialGC
+  -XX:-UsePerfData -Xshare:auto`; `VIBE_JAVA_ARGS` appends overrides.
+- The `.hnmod` sets `VIBE_JAVA` to `<instance>/vibe/java/runtime/` when it
+  exists, for both the sidecar and `/vibe export`.
 - README and INSTALL document the native-mod path beside the standalone CLI.
 
 ## [1.0.0-beta.1] - 2026-11-10

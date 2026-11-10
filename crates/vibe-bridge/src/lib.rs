@@ -14,5 +14,5 @@ pub use client::{
     default_runtime_path, java_command_line, RuntimeClient, RuntimeEvent, RuntimeOptions,
 };
 pub use codec::{read_message, write_message};
-pub use java::{detect_all_java, locate_java, JavaInstallation};
+pub use java::{bundled_java_root, detect_all_java, locate_java, JavaInstallation};
 pub use protocol::{BridgeError, Hello, Message, PROTOCOL_VERSION};

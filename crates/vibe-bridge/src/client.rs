@@ -89,6 +89,18 @@ impl RuntimeClient {
         command.arg("-Dfile.encoding=UTF-8");
         command.arg(format!("-Dvibe.session={session}"));
         command.arg(format!("-Dvibe.side={}", options.side));
+        // A run is a one-shot lifecycle: starting quickly matters more than
+        // peak throughput. C1-only JIT, the small collector and no perf
+        // counters cut startup; the bundled JRE's CDS archive is picked up by
+        // `-Xshare:auto`. `VIBE_JAVA_ARGS` (space-separated) and
+        // `RuntimeOptions::java_args` can still override any of these.
+        command.arg("-XX:TieredStopAtLevel=1");
+        command.arg("-XX:+UseSerialGC");
+        command.arg("-XX:-UsePerfData");
+        command.arg("-Xshare:auto");
+        if let Ok(extra) = std::env::var("VIBE_JAVA_ARGS") {
+            command.args(extra.split_whitespace());
+        }
         if let Some(profile) = &options.profile {
             command.arg(format!("-Dvibe.profile={profile}"));
         }

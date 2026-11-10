@@ -47,6 +47,15 @@ pub fn logs_dir(game_dir: &Path) -> PathBuf {
     home(game_dir).join("logs")
 }
 
+/// The optimized JRE unpacked with the release: `<game>/vibe/java/runtime/`.
+/// When it is there, the sidecar uses it instead of whatever Java the machine
+/// has, so a run does not depend on the player's setup.
+pub fn bundled_java(game_dir: &Path) -> Option<PathBuf> {
+    let runtime = home(game_dir).join("java").join("runtime");
+    let name = if cfg!(windows) { "java.exe" } else { "java" };
+    runtime.join("bin").join(name).is_file().then_some(runtime)
+}
+
 /// `vibe.exe` (or `vibe`) from `VIBE_EXE`, the release folder, the game's own
 /// folder, the folder holding `horizon-client.exe`, or `PATH`.
 pub fn find_exe(game_dir: &Path) -> Option<PathBuf> {
@@ -179,7 +188,13 @@ fn summary(path: &Path) -> Vec<String> {
     lines
 }
 
-fn spawn(exe: &Path, home: &Path, args: &[&std::ffi::OsStr], log: &Path) -> std::io::Result<Child> {
+fn spawn(
+    exe: &Path,
+    home: &Path,
+    args: &[&std::ffi::OsStr],
+    log: &Path,
+    java: Option<&Path>,
+) -> std::io::Result<Child> {
     let out = File::create(log)?;
     let err = out.try_clone()?;
     let mut command = Command::new(exe);
@@ -189,6 +204,9 @@ fn spawn(exe: &Path, home: &Path, args: &[&std::ffi::OsStr], log: &Path) -> std:
         .stdin(Stdio::null())
         .stdout(Stdio::from(out))
         .stderr(Stdio::from(err));
+    if let Some(java) = java {
+        command.env("VIBE_JAVA", java);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -227,6 +245,7 @@ pub fn start(game_dir: &Path) -> String {
         );
     };
     let log = logs.join(format!("sidecar-{}.log", timestamp()));
+    let java = bundled_java(game_dir);
     let args = [
         std::ffi::OsStr::new("run"),
         mods.as_os_str(),
@@ -235,7 +254,7 @@ pub fn start(game_dir: &Path) -> String {
         std::ffi::OsStr::new("--timeout-ms"),
         std::ffi::OsStr::new("120000"),
     ];
-    match spawn(&exe, &home(game_dir), &args, &log) {
+    match spawn(&exe, &home(game_dir), &args, &log, java.as_deref()) {
         Ok(child) => {
             let pid = child.id();
             let count = jars(&mods).len();
@@ -312,6 +331,7 @@ pub fn status(game_dir: &Path) -> Vec<String> {
             jars(&run.mods).len()
         ));
         lines.push(format!("Exe: {}", run.exe.display()));
+        lines.push(java_line(game_dir));
         lines.push(format!("Log: {}", run.log.display()));
         let summary = summary(&run.log);
         if summary.is_empty() {
@@ -335,9 +355,19 @@ pub fn status(game_dir: &Path) -> Vec<String> {
                 home(game_dir).display()
             )),
         }
+        lines.push(java_line(game_dir));
         lines.push("Use /vibe start, or open a world to start it automatically.".to_owned());
     }
     lines
+}
+
+/// Which JVM the sidecar will use: the optimized JRE shipped with the release,
+/// or whatever Java the machine provides.
+fn java_line(game_dir: &Path) -> String {
+    match bundled_java(game_dir) {
+        Some(root) => format!("Java: {} (bundled, optimized)", root.display()),
+        None => "Java: system Java (no bundled runtime in vibe/java/runtime)".to_owned(),
+    }
 }
 
 /// `/vibe mods`: the jars Vibe will read.
@@ -400,6 +430,7 @@ pub fn export(game_dir: &Path) -> String {
         log.display()
     );
     let log_for_thread = log.clone();
+    let java = bundled_java(game_dir);
     std::thread::spawn(move || {
         let mut text = String::new();
         for jar in found {
@@ -421,6 +452,9 @@ pub fn export(game_dir: &Path) -> String {
                 .args(args)
                 .current_dir(&home)
                 .stdin(Stdio::null());
+            if let Some(java) = &java {
+                command.env("VIBE_JAVA", java);
+            }
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -476,5 +510,22 @@ mod tests {
         let game = Path::new("C:/horizon");
         assert_eq!(mods_dir(game), Path::new("C:/horizon/vibe/mods"));
         assert_eq!(logs_dir(game), Path::new("C:/horizon/vibe/logs"));
+    }
+
+    #[test]
+    fn a_bundled_runtime_is_used_only_when_it_has_java() {
+        let game = std::env::temp_dir().join(format!("vibe-java-test-{}", timestamp()));
+        let runtime = home(&game).join("java").join("runtime");
+        let java = runtime
+            .join("bin")
+            .join(if cfg!(windows) { "java.exe" } else { "java" });
+        let _ = fs::remove_dir_all(&game);
+        assert_eq!(bundled_java(&game), None);
+        fs::create_dir_all(java.parent().unwrap()).unwrap();
+        assert_eq!(bundled_java(&game), None);
+        fs::write(&java, b"").unwrap();
+        assert_eq!(bundled_java(&game), Some(runtime));
+        assert!(java_line(&game).contains("bundled, optimized"));
+        let _ = fs::remove_dir_all(&game);
     }
 }

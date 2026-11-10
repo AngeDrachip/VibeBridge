@@ -5,6 +5,7 @@
 # Java
 /java/build/
 /java/**/build/
+/java/runtime/
 *.class
 
 # Runtime / local state

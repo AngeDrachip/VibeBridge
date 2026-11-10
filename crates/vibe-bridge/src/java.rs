@@ -22,13 +22,60 @@ impl JavaInstallation {
     }
 }
 
+/// The optimized JRE shipped with a release: `java/runtime` beside `vibe.exe`
+/// (or one level up), or `VIBE_BUNDLED_JAVA`.
+///
+/// A release unpacks `vibe.exe`, `java/build/vibe-runtime.jar` and a jlink
+/// image at `java/runtime/`. The image is preferred over the machine's Java so
+/// a run does not depend on what the player installed, and so the CDS archive
+/// and startup flags match the runtime Vibe was tested with.
+pub fn bundled_java_root() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("VIBE_BUNDLED_JAVA").filter(|v| !v.is_empty()) {
+        let path = PathBuf::from(value);
+        if is_java_home(&path) {
+            return Some(path);
+        }
+    }
+    let mut roots: Vec<PathBuf> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            roots.push(dir.to_path_buf());
+            if let Some(parent) = dir.parent() {
+                roots.push(parent.to_path_buf());
+            }
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        roots.push(cwd);
+    }
+    find_java_root(&roots)
+}
+
+/// The first `java/runtime`-style home under `roots`, for tests and the
+/// release layout.
+fn find_java_root(roots: &[PathBuf]) -> Option<PathBuf> {
+    for root in roots {
+        for relative in ["java/runtime", "java/jre", "runtime", "jre"] {
+            let candidate = root.join(relative);
+            if is_java_home(&candidate) {
+                return Some(candidate);
+            }
+        }
+    }
+    None
+}
+
+fn is_java_home(path: &Path) -> bool {
+    path.join("bin").join(exe_name("java")).is_file()
+}
+
 /// Locate a Java runtime suitable for Vibe (Java 17+).
 ///
 /// Search order:
 /// 1. an explicit path (file or JDK/JRE home),
-/// 2. `VIBE_JAVA`, then `JAVA_HOME`,
-/// 3. the `java`/`javac` on `PATH`, preferring the JDK's own `java` so a
-///    legacy launcher shim earlier on `PATH` does not win,
+/// 2. `VIBE_JAVA`, then the optimized JRE bundled with the release,
+/// 3. `JAVA_HOME`, then the `java`/`javac` on `PATH`, preferring the JDK's own
+///    `java` so a legacy launcher shim earlier on `PATH` does not win,
 /// 4. common JDK installation directories.
 pub fn locate_java(preferred: Option<&Path>) -> Result<JavaInstallation> {
     if let Some(path) = preferred {
@@ -46,6 +93,11 @@ pub fn locate_java(preferred: Option<&Path>) -> Result<JavaInstallation> {
                 path.display()
             ))
         });
+    }
+    if let Some(root) = bundled_java_root() {
+        if let Some(java) = inspect_candidate(&root) {
+            return Ok(java);
+        }
     }
 
     let mut candidates: BTreeSet<PathBuf> = BTreeSet::new();
@@ -120,6 +172,9 @@ pub fn detect_all_java() -> Vec<JavaInstallation> {
     let mut candidates: BTreeSet<PathBuf> = BTreeSet::new();
     if let Some(path) = env_java_path() {
         candidates.insert(path);
+    }
+    if let Some(root) = bundled_java_root() {
+        candidates.insert(root);
     }
     if let Ok(home) = std::env::var("JAVA_HOME") {
         if !home.trim().is_empty() {
@@ -345,5 +400,32 @@ mod tests {
                 eprintln!("no Java 17+ on this machine: {error}");
             }
         }
+    }
+
+    #[test]
+    fn a_java_home_needs_a_java_executable() {
+        let root = std::env::temp_dir().join(format!(
+            "vibe-java-home-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("bin")).unwrap();
+        assert!(!is_java_home(&root));
+        std::fs::write(root.join("bin").join(exe_name("java")), b"").unwrap();
+        assert!(is_java_home(&root));
+        assert_eq!(find_java_root(std::slice::from_ref(&root)), None);
+        let release = root.join("release-root");
+        let runtime = release.join("java").join("runtime");
+        std::fs::create_dir_all(runtime.join("bin")).unwrap();
+        std::fs::write(runtime.join("bin").join(exe_name("java")), b"").unwrap();
+        assert_eq!(
+            find_java_root(std::slice::from_ref(&release)),
+            Some(runtime)
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
