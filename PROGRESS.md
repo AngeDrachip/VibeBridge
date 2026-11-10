@@ -1,6 +1,6 @@
 # Vibe progress
 
-Last updated: 2026-11-08. Vibe 0.4.0.
+Last updated: 2026-11-10. Vibe 1.0.0-beta.1.
 
 This file separates what is implemented from what is merely planned. A feature
 is only "working" at the highest level where it has actually been exercised.
@@ -12,11 +12,23 @@ is only "working" at the highest level where it has actually been exercised.
 - **Unit-tested** - Rust unit tests cover it.
 - **Integration-tested** - a test starts the real CLI or the real JVM.
 - **Tested with a real Forge mod** - a third-party mod was run and the result
-  recorded. **Nothing in this repository currently meets this level.**
-- **Confirmed inside Horizon** - observed in a running Horizon game. **Nothing
-  in this repository currently meets this level.**
+  recorded. `litematicatool-forge-2.0.0.jar` meets this level for content only.
+- **Confirmed inside Horizon** - observed in a running Horizon game. A
+  Vibe-exported content bundle meets this level.
 
-## Current milestone: 0.4.0 development
+## Current milestone: 1.0.0-beta.1
+
+| Area | Status |
+| --- | --- |
+| `vibe horizon connect` (ctl, socket, player, chunks, version, API) | Implemented, unit-tested, confirmed inside Horizon |
+| `vibe horizon export`, `validate`, `install` | Implemented, unit-tested |
+| `horizon-ctl` discovery in launcher installs, preferring prepared game files | Implemented, unit-tested |
+| Install writes `mod.<id>:true` and defaults to the game home | Implemented, unit-tested |
+| A Vibe-exported bundle loaded by Horizon | Confirmed inside Horizon: 1 block and 2 items registered in 0.2.97 |
+| `litematicatool-forge-2.0.0.jar` carried as content | Tested with a real Forge mod: Horizon loads its assets/data; its Java-only item is reported, not carried |
+| Windows-written bundles (backslash paths, UTF-8 BOM) | Implemented, unit-tested |
+
+## Milestone: 0.4.0 development
 
 | Area | Status |
 | --- | --- |
@@ -66,6 +78,11 @@ Locally verified for this milestone:
 - `nested_demo` loaded a class from `META-INF/jarjar/nested-lib.jar`
 - `vibe bench` measured startup ~103 ms, load ~33 ms, lifecycle ~11 ms on the
   development machine (one fixture, not a general performance claim)
+- `vibe horizon connect` reported `ready: yes` against Horizon launcher 0.2.97,
+  Minecraft 26.3, world `VibeTest`
+- Horizon loaded a Vibe-exported bundle and registered its declared content
+  (1 block, 2 items; 35,723 to 35,724 block states, 1,658 to 1,660 items)
+- `cargo test --workspace`: 93 tests pass
 
 ## Known limitations
 
@@ -77,13 +94,14 @@ Locally verified for this milestone:
 - The runtime backend is the tested clean-room subset, not Minecraft parity.
   Most Minecraft classes, Mixin, coremods, access transformers, capabilities,
   networking, world access, entities, and rendering are still absent or blocked.
-- Registries are in-memory data. Nothing is observable in game.
-- No third-party Forge mod has been tested. The fixtures prove the plumbing,
-  not general compatibility.
-- No integration with a running Horizon game has been tested.
+- Registries are in-memory data in the sidecar. Only a content mod's data and
+  assets are observable in game.
+- One third-party Forge mod (`litematicatool-forge-2.0.0.jar`) has been tested,
+  as content only. Its Java-registered item is reported, not carried.
+- Horizon integration is tested against launcher 0.2.97 with Minecraft 26.3.
 - Mod code is not sandboxed.
-- Vibe 1.0 Beta is **not released** because its real-mod, in-game, and clean
-  install requirements have not been met.
+- 1.0.0-beta.1 is a beta: Java-registered blocks and items, Mixins, coremods and
+  access transformers still block a mod, and most real Forge mods stay blocked.
 
 ## Next concrete tasks
 
