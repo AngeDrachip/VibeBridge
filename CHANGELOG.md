@@ -6,6 +6,26 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `vibe-1.0.0-beta.1.hnmod`: Vibe packaged as a Horizon **native mod**. The
+  launcher compiles it into the game; opening a world starts the JVM sidecar
+  from `<instance>/vibe/mods/`, stopping the world stops it, and chat gains
+  `/vibe status|mods|start|stop|reload|export|help`. It hooks
+  `server_about_to_start`, `server_stopping`, `command`, `commands` and `mods`
+  (hook API 44) on Horizon `2ebf00a0`, horizon-mixins `d9c83d70`; 5 injections
+  and 1 module apply, the game builds, and the sidecar lifecycle was proven in
+  a running world. The `.hnmod` is accepted by
+  `horizon_mods::index::native::Bundle::read`.
+- `docs/NATIVE_MOD.md`: install steps, on-disk layout, verified hooks and the
+  remaining limit (Java runs in the sidecar, not in Horizon's world).
+- `tools/package_hnmod.py`: deterministic `.hnmod` packager (fixed dates and
+  modes, so the same sources give the same SHA-256).
+
+### Changed
+
+- README and INSTALL document the native-mod path beside the standalone CLI.
+
 ## [1.0.0-beta.1] - 2026-11-10
 
 First beta. Adds a real Horizon integration on top of the 0.4.0 runtime, and

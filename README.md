@@ -36,6 +36,25 @@ Vibe reads each jar read-only and reports blocked mods with evidence. Horizon
 itself cannot execute Java; `vibe horizon export` turns a jar's assets and data
 into a `.hmod` Horizon can load.
 
+### From inside Horizon: the `.hnmod` native mod
+
+The release also ships `vibe-1.0.0-beta.1.hnmod`, a Horizon **native mod**. The
+launcher compiles it into the game, so a world opening starts Vibe's sidecar by
+itself and chat gains `/vibe status`, `/vibe mods`, `/vibe start`, `/vibe stop`,
+`/vibe reload`, `/vibe export` and `/vibe help`.
+
+1. Install `vibe-1.0.0-beta.1.hnmod` on the launcher's Mods page (**Add from
+   GitHub** → `https://github.com/AngeDrachip/VibeBridge`, or the
+   `horizon-native-mods/` folder), then **Build**.
+2. Unpack the release zip inside the instance folder (the one holding
+   `options.txt`, usually `%APPDATA%\horizon`), so `vibe\vibe.exe` and
+   `vibe\java\build\vibe-runtime.jar` exist.
+3. Drop Forge jars in `<instance>\vibe\mods\` and open a world.
+
+This removes the manual `vibe run` step; it does not move Java into Horizon's
+world. See [docs/NATIVE_MOD.md](docs/NATIVE_MOD.md) for the exact layout, the
+verified hooks and the limits.
+
 ## What Vibe does
 
 - **Discovers and inspects** Forge jars and directories read-only. It parses

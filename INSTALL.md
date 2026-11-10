@@ -28,6 +28,25 @@ source checkout. `vibe run mods` inspects every jar in `mods/` read-only and
 runs the Forge API subset it supports. It reports blocked mods with evidence
 instead of pretending they ran.
 
+## Or install Vibe as a Horizon native mod
+
+`vibe-1.0.0-beta.1.hnmod` is Vibe packaged for Horizon's native mod system. The
+launcher compiles it into the game, so opening a world starts Vibe's sidecar
+automatically and `/vibe` commands answer in chat.
+
+1. On the Horizon launcher's Mods page, install the `.hnmod` (**Add from
+   GitHub** → `https://github.com/AngeDrachip/VibeBridge`, or copy it into the
+   instance's `horizon-native-mods/` folder), accept the native-code warning,
+   then press **Build**.
+2. Unpack this release zip inside the instance folder (the one holding
+   `options.txt`, usually `%APPDATA%\horizon`). You need
+   `vibe\vibe.exe` and `vibe\java\build\vibe-runtime.jar` there.
+3. Put Forge jars in `<instance>\vibe\mods\` and start a world.
+4. In chat: `/vibe status`, `/vibe mods`, `/vibe reload`, `/vibe help`.
+
+Java still runs in Vibe's own JVM beside Horizon, not in Horizon's world. See
+[docs/NATIVE_MOD.md](docs/NATIVE_MOD.md).
+
 The steps below build from source.
 
 If you want the long version, start with
