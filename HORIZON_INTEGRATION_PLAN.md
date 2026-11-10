@@ -278,3 +278,34 @@ Proceed with:
 2. Document the full workflow
 3. Update documentation
 4. Prepare 1.0.0-beta.1 release
+---
+
+## Verified against a live install (2026-11-10)
+
+Horizon launcher `v0.2.97`, Minecraft 26.3, world `VibeTest`.
+
+- `vibe horizon connect` reports `ready: yes` against the running game
+  (`screen: playing`, `chunks_loaded: ok`, `game_version: 26.3`).
+- `vibe horizon export` on `litematicatool-forge-2.0.0.jar` writes a valid
+  bundle: 9 resource files, 305 319 bytes, namespace `litematicatool`.
+- `vibe horizon install` copies the bundle into
+  `%APPDATA%\horizon-launcher\horizon-mods\`.
+- Horizon loads it: the log says
+  `Horizon: content from 1 mod(s) in ...\.horizon-cache\mod-content`.
+- The mod adds no items: its `TheStickItem` is registered in Java code, and the
+  jar ships no `data/<ns>/horizon/item/` declaration. `horizon-ctl give
+  litematicatool:the_stick` answers `unknown item`, which is the honest result.
+- A hand-written data-only bundle (`data/vibetest/horizon/item/ruby.json`,
+  `{"template": "minecraft:diamond"}`) validates with `1 item(s)`, which proves
+  the content path itself works.
+
+Three defects were found and fixed by this test:
+
+1. Launcher discovery read `selected_version`, but the launcher writes
+   `selected`.
+2. Discovery picked the newest install even when only an older one had prepared
+   game files; an unprepared install cannot start the game.
+3. Validation reopened entries by normalized name, so bundles written by Windows
+   tools (backslash entry names) and files with a UTF-8 BOM were rejected.
+
+`vibe-horizon` now has 19 tests; the workspace has 91.

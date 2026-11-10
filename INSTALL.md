@@ -1,9 +1,14 @@
 # Installing Vibe
 
-Vibe 0.4.0 is a **development milestone**, not the Vibe 1.0 Beta. It can inspect
+Vibe 1.0.0-beta.1 is the **first beta**, not a finished runtime. It can inspect
 original Forge jars, run a small clean-room Forge API subset in a real JVM, and
 export assets/data as a Horizon content mod. It does not make Horizon execute
 Java gameplay code, and most real Forge mods are still blocked or untested.
+
+If you only want the binary, download
+`vibe-1.0.0-beta.1-windows-x86_64.zip` from
+[the v1.0.0-beta.1 release](https://github.com/AngeDrachip/VibeBridge/releases/tag/v1.0.0-beta.1),
+unpack it, and run `vibe doctor`. The steps below build from source.
 
 If you want the long version, start with
 [docs/INSTALLATION.md](docs/INSTALLATION.md). This file is the short path.
@@ -65,6 +70,18 @@ cargo build --release
 5. For content-only mods, export assets/data with
    `vibe horizon export <jar> --output <file>.hmod` and install the bundle with
    `vibe horizon install`.
+
+## Check a live Horizon instance
+
+```powershell
+vibe horizon probe      # find horizon-ctl
+vibe horizon connect    # verify the running game, exit 0 when ready
+```
+
+`connect` checks the control socket, the player in the world, pending chunks,
+the Minecraft version, and the Horizon content API. Turn on
+Options > Horizon Settings > AI Agent in the game, or start it with
+`horizon-ctl launch --world NAME --wait`.
 
 ## Enable and disable mods
 

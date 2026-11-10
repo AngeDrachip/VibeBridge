@@ -220,6 +220,39 @@ fn launcher_ctl_in(launcher_root: &Path) -> Option<PathBuf> {
     found.into_iter().map(|(_, _, _, path)| path).next()
 }
 
+/// Find the Horizon game folder: the one holding `options.txt` and
+/// `horizon-mods/`. `HORIZON_HOME` wins, then the launcher's game home.
+///
+/// This is not the launcher root: the launcher keeps its versions and its own
+/// `horizon-mods` folder, but the game reads content mods from its game home.
+pub fn locate_game_dir() -> Option<PathBuf> {
+    let mut candidates = Vec::new();
+    if let Ok(value) = std::env::var("HORIZON_HOME") {
+        if !value.trim().is_empty() {
+            candidates.push(PathBuf::from(value.trim()));
+        }
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        candidates.push(PathBuf::from(appdata).join("horizon"));
+    }
+    if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".local").join("share").join("horizon"));
+        candidates.push(
+            home.join("Library")
+                .join("Application Support")
+                .join("horizon"),
+        );
+    }
+    if let Some(found) = candidates
+        .iter()
+        .find(|dir| dir.is_dir() && dir.join("options.txt").is_file())
+    {
+        return Some(found.clone());
+    }
+    candidates.into_iter().find(|dir| dir.is_dir())
+}
+
 /// The launcher release tag that owns `horizon-ctl`, when it lives under a
 /// `versions/<tag>/` folder.
 fn install_tag_for(ctl: &Path) -> Option<String> {
@@ -691,6 +724,11 @@ pub struct InstallReport {
     pub bytes: u64,
     pub sha256: String,
     pub validation: BundleValidation,
+    /// The `horizon-mods.txt` line that turns the mod on, when the bundle has
+    /// an id.
+    pub enable_line: Option<String>,
+    /// Whether `horizon-mods.txt` now turns this mod on.
+    pub enabled: bool,
 }
 
 /// Check an existing `.hmod` without changing it.
@@ -1086,6 +1124,8 @@ pub fn install_content_bundle(
     }
 
     let source_bytes = std::fs::metadata(bundle)?.len();
+    let enable_line = validation.id.as_ref().map(|id| format!("mod.{id}:true"));
+    let mut enabled = false;
     if !dry_run {
         std::fs::create_dir_all(&mods_dir)?;
         let temp = temp_path(&destination);
@@ -1102,6 +1142,9 @@ pub fn install_content_bundle(
             let _ = std::fs::remove_file(&temp);
             return Err(error);
         }
+        if let Some(line) = &enable_line {
+            enabled = enable_mod(game_dir, line)?;
+        }
     }
 
     Ok(InstallReport {
@@ -1112,7 +1155,48 @@ pub fn install_content_bundle(
         bytes: source_bytes,
         sha256: validation.sha256.clone(),
         validation,
+        enable_line,
+        enabled,
     })
+}
+
+/// Horizon leaves a content mod off until `horizon-mods.txt` holds
+/// `mod.<id>:true`. Add that line, replacing an existing `mod.<id>:` line, and
+/// keep the rest of the file as it was. Returns whether the mod is now on.
+fn enable_mod(game_dir: &Path, line: &str) -> Result<bool> {
+    let id = line
+        .strip_prefix("mod.")
+        .and_then(|rest| rest.split(':').next())
+        .unwrap_or(line);
+    let path = game_dir.join("horizon-mods.txt");
+    let existing = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(error.into()),
+    };
+    let prefix = format!("mod.{id}:");
+    let mut lines = Vec::new();
+    let mut replaced = false;
+    for current in existing.lines() {
+        let trimmed = current.trim();
+        if trimmed.starts_with(&prefix) {
+            if !replaced {
+                lines.push(line.to_string());
+                replaced = true;
+            }
+            continue;
+        }
+        lines.push(current.to_string());
+    }
+    if !replaced {
+        lines.push(line.to_string());
+    }
+    let mut text = lines.join("\n");
+    if !text.is_empty() {
+        text.push('\n');
+    }
+    std::fs::write(&path, text)?;
+    Ok(true)
 }
 
 /// Drop a UTF-8 byte-order mark. Windows editors and `Set-Content -Encoding
@@ -2267,12 +2351,34 @@ typo = "refused"
             std::fs::read(&installed.destination).unwrap(),
             std::fs::read(&bundle).unwrap()
         );
+        assert_eq!(
+            installed.enable_line.as_deref(),
+            Some("mod.examplemod:true")
+        );
+        assert!(installed.enabled);
+        let mods_txt = std::fs::read_to_string(game.join("horizon-mods.txt")).unwrap();
+        assert!(mods_txt.contains("mod.examplemod:true"), "{mods_txt}");
 
         let error = install_content_bundle(&bundle, &game, false, false).unwrap_err();
         assert!(error.to_string().contains("--force"), "{error}");
 
         let replaced = install_content_bundle(&bundle, &game, true, false).unwrap();
         assert!(replaced.destination.is_file());
+        let mods_txt = std::fs::read_to_string(game.join("horizon-mods.txt")).unwrap();
+        assert_eq!(mods_txt.matches("mod.examplemod:").count(), 1, "{mods_txt}");
+    }
+
+    #[test]
+    fn enable_mod_replaces_only_its_own_line() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("horizon-mods.txt"),
+            "mod.other:false\nmod.ruby:false\nmod.tail:true\n",
+        )
+        .unwrap();
+        assert!(enable_mod(temp.path(), "mod.ruby:true").unwrap());
+        let text = std::fs::read_to_string(temp.path().join("horizon-mods.txt")).unwrap();
+        assert_eq!(text, "mod.other:false\nmod.ruby:true\nmod.tail:true\n");
     }
 
     #[test]

@@ -138,12 +138,17 @@ target\release\vibe.exe horizon export java\test-mods\build\hello-forge.jar `
 # Check the bundle against the documented Horizon content rules.
 target\release\vibe.exe horizon validate dist\hello-forge.hmod
 
-# Copy a validated bundle into <game-dir>\horizon-mods (dry run first).
-target\release\vibe.exe horizon install dist\hello-forge.hmod `
-  --game-dir "%APPDATA%\.minecraft" --dry-run
+# Copy a validated bundle into the Horizon game folder's horizon-mods\
+# and turn it on in horizon-mods.txt (dry run first). Without --game-dir,
+# Vibe uses %APPDATA%\horizon, the folder holding options.txt.
+target\release\vibe.exe horizon install dist\hello-forge.hmod --dry-run
+target\release\vibe.exe horizon install dist\hello-forge.hmod
 
 # Probe a local Horizon control surface (optional).
 target\release\vibe.exe horizon probe
+
+# Verify a running game: socket, player, chunks, version, content API.
+target\release\vibe.exe horizon connect
 ```
 
 Every command accepts `--json` for machine-readable output.
@@ -176,7 +181,7 @@ Every command accepts `--json` for machine-readable output.
 | `vibe horizon connect` | Connect to a running Horizon instance and verify it. | `0` ready, `1` not ready |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
-| `vibe horizon install <hmod>` | Copy a validated bundle into `<game-dir>/horizon-mods/`. | `0` success, `1` error |
+| `vibe horizon install <hmod>` | Copy a validated bundle into the game folder's `horizon-mods/` and turn it on in `horizon-mods.txt`. | `0` success, `1` error |
 
 Useful `run` options:
 

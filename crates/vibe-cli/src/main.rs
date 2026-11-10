@@ -21,7 +21,8 @@ use vibe_core::metadata::ModSide;
 use vibe_core::profile::{ModRequirements, ProfileMatrix, ProfileResolution, ResolutionStatus};
 use vibe_core::{CompatDatabase, CompatStatus, Verdict};
 use vibe_horizon::{
-    connect, export_jar, install_content_bundle, probe, validate_content_bundle, ExportOptions,
+    connect, export_jar, install_content_bundle, locate_game_dir, probe, validate_content_bundle,
+    ExportOptions,
 };
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
 use vibe_registry::plan_for_side_with_profile;
@@ -220,9 +221,10 @@ struct ValidateArgs {
 struct InstallArgs {
     /// The .hmod content bundle to install.
     bundle: PathBuf,
-    /// Horizon game folder: the one holding options.txt.
+    /// Horizon game folder: the one holding options.txt. Defaults to
+    /// `HORIZON_HOME`, then the launcher's game home.
     #[arg(long)]
-    game_dir: PathBuf,
+    game_dir: Option<PathBuf>,
     /// Replace an existing file with the same name.
     #[arg(long)]
     force: bool,
@@ -1485,17 +1487,32 @@ fn horizon_validate(args: ValidateArgs, json: bool) -> Result<u8> {
 }
 
 fn horizon_install(args: InstallArgs, json: bool) -> Result<u8> {
-    let report = install_content_bundle(&args.bundle, &args.game_dir, args.force, args.dry_run)?;
+    let game_dir =
+        match args.game_dir.clone().or_else(locate_game_dir) {
+            Some(dir) => dir,
+            None => return Err(VibeError::Horizon(
+                "no Horizon game folder found; pass --game-dir with the folder holding options.txt"
+                    .into(),
+            )),
+        };
+    let report = install_content_bundle(&args.bundle, &game_dir, args.force, args.dry_run)?;
     if json {
         print_json(&report)?;
     } else if report.dry_run {
         println!("Would install {}", report.bundle.display());
         println!("  to: {}", report.destination.display());
         println!("  {} bytes, sha256 {}", report.bytes, report.sha256);
+        if let Some(line) = &report.enable_line {
+            println!("  would add horizon-mods.txt line: {line}");
+        }
     } else {
         println!("Installed {}", report.bundle.display());
         println!("  to: {}", report.destination.display());
         println!("  {} bytes, sha256 {}", report.bytes, report.sha256);
+        if let Some(line) = &report.enable_line {
+            let state = if report.enabled { "on" } else { "off" };
+            println!("  horizon-mods.txt: {line} ({state})");
+        }
     }
     if !report.validation.warnings.is_empty() {
         println!("Warnings:");
@@ -1530,7 +1547,8 @@ fn setup(args: SetupArgs, json: bool) -> Result<u8> {
     let horizon = probe(args.ctl.as_deref());
 
     let mut horizon_mods = None;
-    if let Some(game_dir) = &args.game_dir {
+    let game_dir = args.game_dir.clone().or_else(locate_game_dir);
+    if let Some(game_dir) = &game_dir {
         if game_dir.is_dir() {
             let folder = game_dir.join("horizon-mods");
             if !folder.exists() {
