@@ -606,6 +606,13 @@ pub struct ExportOptions {
     pub include_convention_tags: bool,
     /// Include `assets/minecraft/atlases/` sources.
     pub include_atlases: bool,
+    /// Items to declare, as `NAME=TEMPLATE` pairs (for example
+    /// `the_stick=minecraft:stick`). A Forge mod registers its items in Java,
+    /// which a content mod cannot carry, so the mapping has to be stated.
+    /// Each pair writes `data/<id>/horizon/item/NAME.json` with
+    /// `{"template": "TEMPLATE"}`, and a 26.3 item definition when the jar has
+    /// the old `assets/<id>/models/item/NAME.json`.
+    pub item_templates: Vec<String>,
 }
 
 impl Default for ExportOptions {
@@ -620,8 +627,23 @@ impl Default for ExportOptions {
             include_vanilla_tags: true,
             include_convention_tags: true,
             include_atlases: true,
+            item_templates: Vec::new(),
         }
     }
+}
+
+/// An item a bundle declares, and the vanilla template it copies.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ItemDeclaration {
+    /// The item path inside the mod's namespace, e.g. `the_stick`.
+    pub name: String,
+    /// The vanilla item whose behaviour the declaration copies.
+    pub template: String,
+    /// The declaration entry written into the bundle.
+    pub path: String,
+    /// The 26.3 item definition written from an old `models/item` file.
+    #[serde(default)]
+    pub model: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -646,6 +668,9 @@ pub struct ContentExport {
     pub file_counts: BTreeMap<String, usize>,
     /// Every file written into the bundle, with its kind and size.
     pub entries: Vec<ExportEntry>,
+    /// Items declared from `item_templates`, in the order given.
+    #[serde(default)]
+    pub items: Vec<ItemDeclaration>,
     /// Up to 512 entries that were not carried, with why. Counts above are
     /// complete even when this list is truncated.
     #[serde(default)]
@@ -1331,6 +1356,8 @@ pub fn export_content(
         namespaces.insert(namespace.to_string());
     }
 
+    let item_templates = parse_item_templates(&options.item_templates)?;
+
     let first_mod = inspection.metadata.mods.first();
     let name = options
         .name
@@ -1538,10 +1565,43 @@ pub fn export_content(
     if !parent.as_os_str().is_empty() {
         std::fs::create_dir_all(parent)?;
     }
+    // A declared item writes its own declaration. When the jar ships the old
+    // `assets/<id>/models/item/<name>.json`, also write the 26.3 item
+    // definition that points at it: 26.3 no longer reads `models/item`.
+    let selected_paths: BTreeSet<&str> =
+        selected.iter().map(|(name, _, _)| name.as_str()).collect();
+    let mut items: Vec<ItemDeclaration> = Vec::new();
+    for (name, template) in &item_templates {
+        let path = format!("data/{id}/horizon/item/{name}.json");
+        if selected_paths.contains(path.as_str()) {
+            return Err(VibeError::Horizon(format!(
+                "{path} is already in the jar; it declares this item itself, so --item-template would overwrite it"
+            )));
+        }
+        let old_model = format!("assets/{id}/models/item/{name}.json");
+        let new_model = format!("assets/{id}/items/{name}.json");
+        let model = (selected_paths.contains(old_model.as_str())
+            && !selected_paths.contains(new_model.as_str()))
+        .then_some(new_model);
+        items.push(ItemDeclaration {
+            name: name.clone(),
+            template: template.clone(),
+            path,
+            model,
+        });
+    }
     let temp = temp_path(output);
     let mut file_counts: BTreeMap<String, usize> = BTreeMap::new();
     for (_, kind, _) in &selected {
         *file_counts.entry(kind.label().to_string()).or_default() += 1;
+    }
+    for item in &items {
+        *file_counts
+            .entry("item_declaration".to_string())
+            .or_default() += 1;
+        if item.model.is_some() {
+            *file_counts.entry("item_model".to_string()).or_default() += 1;
+        }
     }
 
     let write_result = (|| -> Result<()> {
@@ -1573,6 +1633,22 @@ pub fn export_content(
                 .start_file(name.as_str(), options)
                 .map_err(zip_error)?;
             writer.write_all(&bytes)?;
+        }
+        for item in &items {
+            let body = item_declaration_body(&item.template);
+            total_bytes += body.len() as u64;
+            writer
+                .start_file(item.path.as_str(), options)
+                .map_err(zip_error)?;
+            writer.write_all(body.as_bytes())?;
+            if let Some(model) = &item.model {
+                let body = item_model_body(&id, &item.name);
+                total_bytes += body.len() as u64;
+                writer
+                    .start_file(model.as_str(), options)
+                    .map_err(zip_error)?;
+                writer.write_all(body.as_bytes())?;
+            }
         }
         writer.finish().map_err(zip_error)?;
         Ok(())
@@ -1659,6 +1735,29 @@ pub fn export_content(
         ));
     }
 
+    if !items.is_empty() {
+        let declared: Vec<String> = items
+            .iter()
+            .map(|item| format!("{} ({})", item.name, item.template))
+            .collect();
+        notes.push(format!(
+            "Declared {} item(s) from --item-template: {}. Horizon copies the named vanilla template; the Java class that registered the item is not carried, so its behaviour stays behind.",
+            items.len(),
+            declared.join(", ")
+        ));
+        let without_model: Vec<&str> = items
+            .iter()
+            .filter(|item| item.model.is_none())
+            .map(|item| item.name.as_str())
+            .collect();
+        if !without_model.is_empty() {
+            notes.push(format!(
+                "No old assets/<id>/models/item file for {}; the item uses its template's model and texture unless the bundle ships one.",
+                without_model.join(", ")
+            ));
+        }
+    }
+
     let mut entries: Vec<ExportEntry> = selected
         .iter()
         .map(|(path, kind, bytes)| ExportEntry {
@@ -1667,7 +1766,22 @@ pub fn export_content(
             bytes: *bytes,
         })
         .collect();
+    for item in &items {
+        entries.push(ExportEntry {
+            path: item.path.clone(),
+            kind: "item_declaration".to_string(),
+            bytes: item_declaration_body(&item.template).len() as u64,
+        });
+        if let Some(model) = &item.model {
+            entries.push(ExportEntry {
+                path: model.clone(),
+                kind: "item_model".to_string(),
+                bytes: item_model_body(&id, &item.name).len() as u64,
+            });
+        }
+    }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
+    let item_models = items.iter().filter(|item| item.model.is_some()).count();
 
     Ok(ContentExport {
         source: jar.to_path_buf(),
@@ -1679,12 +1793,13 @@ pub fn export_content(
         side,
         namespaces: namespaces.into_iter().collect(),
         outside_namespaces: outside_namespaces.into_iter().collect(),
-        files: selected.len(),
+        files: selected.len() + items.len() + item_models,
         bytes: total_bytes,
         excluded_files,
         ignored_entries,
         file_counts,
         entries,
+        items,
         skipped,
         skipped_truncated,
         source_pack_formats,
@@ -1787,6 +1902,47 @@ fn valid_namespace(namespace: &str) -> bool {
         })
 }
 
+/// Parse `--item-template NAME=TEMPLATE` pairs.
+///
+/// A content mod declares an item as `data/<id>/horizon/item/<name>.json`
+/// copying a vanilla template. A Forge mod registers its items in Java, so the
+/// name and the template have to be stated explicitly.
+fn parse_item_templates(raw: &[String]) -> Result<Vec<(String, String)>> {
+    let mut seen = BTreeSet::new();
+    let mut parsed = Vec::new();
+    for pair in raw {
+        let Some((name, template)) = pair.split_once('=') else {
+            return Err(VibeError::Horizon(format!(
+                "invalid item template {pair:?}; expected NAME=TEMPLATE, for example the_stick=minecraft:stick"
+            )));
+        };
+        let name = name.trim();
+        let template = template.trim();
+        if !valid_entry_path(name) || name.contains('/') {
+            return Err(VibeError::Horizon(format!(
+                "invalid item name {name:?} in {pair:?}; expected one lowercase path segment such as the_stick"
+            )));
+        }
+        let Some((namespace, path)) = template.split_once(':') else {
+            return Err(VibeError::Horizon(format!(
+                "invalid template {template:?} in {pair:?}; expected namespace:path, for example minecraft:stick"
+            )));
+        };
+        if !valid_namespace(namespace) || !valid_entry_path(path) {
+            return Err(VibeError::Horizon(format!(
+                "invalid template {template:?} in {pair:?}; expected namespace:path, for example minecraft:stick"
+            )));
+        }
+        if !seen.insert(name.to_string()) {
+            return Err(VibeError::Horizon(format!(
+                "item {name:?} is declared twice; give each item one template"
+            )));
+        }
+        parsed.push((name.to_string(), template.to_string()));
+    }
+    Ok(parsed)
+}
+
 fn normalize_side(side: &str) -> Result<String> {
     match side.trim().to_ascii_lowercase().as_str() {
         "client" => Ok("client".into()),
@@ -1841,6 +1997,17 @@ fn validate_bundle(path: &Path, expected_id: &ModId) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The declaration Horizon reads at `data/<id>/horizon/item/<name>.json`.
+fn item_declaration_body(template: &str) -> String {
+    format!("{{\"template\": \"{template}\"}}\n")
+}
+
+/// The 26.3 item definition, which points at the model the jar already ships
+/// under the old `models/item` layout.
+fn item_model_body(id: &ModId, name: &str) -> String {
+    format!("{{\"model\": {{\"type\": \"minecraft:model\", \"model\": \"{id}:item/{name}\"}}}}\n")
 }
 
 fn toml_string(value: &str) -> String {
@@ -2011,6 +2178,137 @@ authors = "Ada, Grace"
         assert!(manifest.contains("api = \"0.2\""));
         assert!(manifest.contains("capabilities = [\"registries\"]"));
         assert!(manifest.contains("authors = [\"Ada\", \"Grace\"]"));
+    }
+
+    #[test]
+    fn declares_an_item_from_a_template_and_writes_its_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let jar = temp.path().join("examplemod.jar");
+        let output = temp.path().join("examplemod.hmod");
+        let metadata = r#"
+modLoader = "javafml"
+loaderVersion = "[47,)"
+
+[[mods]]
+modId = "examplemod"
+version = "1.2.3"
+"#;
+        write_zip(
+            &jar,
+            &[
+                ("META-INF/mods.toml", metadata.as_bytes()),
+                ("assets/examplemod/lang/en_us.json", b"{}"),
+                (
+                    "assets/examplemod/models/item/ruby.json",
+                    br#"{"parent": "minecraft:item/handheld"}"#,
+                ),
+                ("assets/examplemod/textures/item/ruby.png", b"png"),
+                ("data/examplemod/recipe/ruby.json", b"{}"),
+            ],
+        );
+        let options = ExportOptions {
+            item_templates: vec!["ruby=minecraft:diamond".to_string()],
+            ..ExportOptions::default()
+        };
+
+        let exported = export_jar(&jar, &output, &options).unwrap();
+
+        assert_eq!(exported.items.len(), 1);
+        let item = &exported.items[0];
+        assert_eq!(item.name, "ruby");
+        assert_eq!(item.template, "minecraft:diamond");
+        assert_eq!(item.path, "data/examplemod/horizon/item/ruby.json");
+        assert_eq!(
+            item.model.as_deref(),
+            Some("assets/examplemod/items/ruby.json")
+        );
+
+        let mut archive = ZipArchive::new(File::open(&output).unwrap()).unwrap();
+        let mut declaration = String::new();
+        archive
+            .by_name("data/examplemod/horizon/item/ruby.json")
+            .unwrap()
+            .read_to_string(&mut declaration)
+            .unwrap();
+        assert_eq!(declaration.trim(), r#"{"template": "minecraft:diamond"}"#);
+        let mut model = String::new();
+        archive
+            .by_name("assets/examplemod/items/ruby.json")
+            .unwrap()
+            .read_to_string(&mut model)
+            .unwrap();
+        assert_eq!(
+            model.trim(),
+            r#"{"model": {"type": "minecraft:model", "model": "examplemod:item/ruby"}}"#
+        );
+
+        let report = validate_content_bundle(&output).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.item_definitions, 1);
+    }
+
+    #[test]
+    fn a_declared_item_without_an_old_model_uses_the_template_model() {
+        let temp = tempfile::tempdir().unwrap();
+        let jar = temp.path().join("examplemod.jar");
+        let output = temp.path().join("examplemod.hmod");
+        fixture_jar(&jar);
+        let options = ExportOptions {
+            item_templates: vec!["stick=minecraft:stick".to_string()],
+            ..ExportOptions::default()
+        };
+
+        let exported = export_jar(&jar, &output, &options).unwrap();
+
+        assert_eq!(exported.items.len(), 1);
+        assert!(exported.items[0].model.is_none());
+        assert!(exported
+            .notes
+            .iter()
+            .any(|note| note.contains("No old assets/<id>/models/item file")));
+        let report = validate_content_bundle(&output).unwrap();
+        assert!(report.valid, "{:?}", report.errors);
+        assert_eq!(report.item_definitions, 1);
+    }
+
+    #[test]
+    fn rejects_malformed_item_templates() {
+        let temp = tempfile::tempdir().unwrap();
+        let jar = temp.path().join("examplemod.jar");
+        fixture_jar(&jar);
+        let cases = [
+            ("no_equals", "no separator"),
+            ("Ruby=minecraft:diamond", "uppercase name"),
+            ("ruby=stick", "template without a namespace"),
+            ("ruby=minecraft:", "template without a path"),
+        ];
+        for (index, (pair, why)) in cases.iter().enumerate() {
+            let output = temp.path().join(format!("case{index}.hmod"));
+            let options = ExportOptions {
+                item_templates: vec![pair.to_string()],
+                ..ExportOptions::default()
+            };
+            let error = export_jar(&jar, &output, &options).unwrap_err();
+            let message = error.to_string();
+            assert!(
+                message.contains("item template")
+                    || message.contains("item name")
+                    || message.contains("invalid template"),
+                "{why}: {error}"
+            );
+            assert!(!output.exists(), "{why}: a failed export left a bundle");
+        }
+
+        let output = temp.path().join("duplicate.hmod");
+        let options = ExportOptions {
+            item_templates: vec![
+                "ruby=minecraft:diamond".to_string(),
+                "ruby=minecraft:emerald".to_string(),
+            ],
+            ..ExportOptions::default()
+        };
+        let error = export_jar(&jar, &output, &options).unwrap_err();
+        assert!(error.to_string().contains("declared twice"), "{error}");
     }
 
     #[test]

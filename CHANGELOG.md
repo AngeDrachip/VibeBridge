@@ -6,9 +6,10 @@ All notable changes to Vibe are documented here. The format follows
 
 ## [Unreleased]
 
-## [1.0.0-beta.1] - 2026-11-08
+## [1.0.0-beta.1] - 2026-11-10
 
-First beta. Adds a real Horizon integration on top of the 0.4.0 runtime.
+First beta. Adds a real Horizon integration on top of the 0.4.0 runtime, and
+ships a working `.hmod` content bundle as a release artifact.
 
 ### Added
 
@@ -21,12 +22,18 @@ First beta. Adds a real Horizon integration on top of the 0.4.0 runtime.
 - Horizon content export (`vibe horizon export`) validated against the
   documented `horizon-mod.toml` rules, plus `vibe horizon validate` and
   `vibe horizon install` with `--dry-run` and `--force`.
+- `vibe horizon export --item-template NAME=TEMPLATE`: declares an item a mod
+  registered in Java, as `data/<id>/horizon/item/NAME.json` copying a vanilla
+  template. When the jar ships the old `assets/<id>/models/item/NAME.json`,
+  Vibe also writes the 26.3 `assets/<id>/items/NAME.json` definition so the
+  mod's own model and texture are used. The release's `litematicatool.hmod`
+  uses `the_stick=minecraft:stick`.
 - `vibe horizon install` turns the mod on in `horizon-mods.txt`
   (`mod.<id>:true`), because Horizon leaves a content mod off until that line
   exists, and defaults `--game-dir` to the Horizon game home
   (`HORIZON_HOME`, then `%APPDATA%\horizon`), not the launcher root.
-- 15 `vibe-horizon` unit tests covering discovery, connect checks, export,
-  validation, and install.
+- 23 `vibe-horizon` unit tests covering discovery, connect checks, export,
+  validation, install, enabling, and item declarations.
 
 ### Changed
 

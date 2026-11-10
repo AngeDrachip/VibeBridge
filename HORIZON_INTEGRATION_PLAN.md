@@ -309,3 +309,22 @@ Three defects were found and fixed by this test:
    tools (backslash entry names) and files with a UTF-8 BOM were rejected.
 
 `vibe-horizon` now has 19 tests; the workspace has 91.
+
+## Item declarations (2026-11-10)
+
+A Forge mod registers its items in Java, which a content mod cannot carry. Vibe
+now takes an explicit mapping: `vibe horizon export --item-template
+NAME=TEMPLATE` writes `data/<id>/horizon/item/NAME.json` with
+`{"template": "minecraft:..."}`, plus the 26.3 `assets/<id>/items/NAME.json`
+definition when the jar ships the old `assets/<id>/models/item/NAME.json`.
+
+`litematicatool.hmod` was rebuilt with `--item-template the_stick=minecraft:stick`:
+
+- 11 files, 305 432 bytes; validation reports `1 item(s)`.
+- Installed into `%APPDATA%\horizon`, `mod.litematicatool:true`.
+- In game: 1,658 to 1,661 items (litematicatool + the two vibetest items).
+- `horizon-ctl give litematicatool:the_stick` -> `{"given":1,"ok":true}`; the
+  item is in the inventory with the mod's own model and texture.
+
+The declared item copies the vanilla stick's behaviour. `TheStickItem`'s Java
+logic is not executed, and Vibe says so in the export notes.

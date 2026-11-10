@@ -135,6 +135,11 @@ target\release\vibe.exe run java\test-mods\build --profile forge-1.21.1-52
 target\release\vibe.exe horizon export java\test-mods\build\hello-forge.jar `
   --output dist\hello-forge.hmod
 
+# Declare an item the mod registered in Java, copying a vanilla template.
+target\release\vibe.exe horizon export litematicatool-forge-2.0.0.jar `
+  --output dist\litematicatool.hmod `
+  --item-template the_stick=minecraft:stick
+
 # Check the bundle against the documented Horizon content rules.
 target\release\vibe.exe horizon validate dist\hello-forge.hmod
 
@@ -179,7 +184,7 @@ Every command accepts `--json` for machine-readable output.
 | `vibe compat` | Show the embedded compatibility database and the evidence behind each status. | `0` success |
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon connect` | Connect to a running Horizon instance and verify it. | `0` ready, `1` not ready |
-| `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar. | `0` success, `1` error |
+| `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar; `--item-template NAME=TEMPLATE` declares an item the mod registered in Java. | `0` success, `1` error |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
 | `vibe horizon install <hmod>` | Copy a validated bundle into the game folder's `horizon-mods/` and turn it on in `horizon-mods.txt`. | `0` success, `1` error |
 

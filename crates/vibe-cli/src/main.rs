@@ -209,6 +209,11 @@ struct ExportArgs {
     /// Leave out atlas sources.
     #[arg(long)]
     no_atlases: bool,
+    /// Declare an item the mod registered in Java: NAME=TEMPLATE, for example
+    /// the_stick=minecraft:stick (repeatable). Writes
+    /// data/<id>/horizon/item/NAME.json copying the vanilla template.
+    #[arg(long = "item-template", value_name = "NAME=TEMPLATE")]
+    item_templates: Vec<String>,
 }
 
 #[derive(Args)]
@@ -1372,6 +1377,7 @@ fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {
         include_vanilla_tags: !args.no_vanilla_tags,
         include_convention_tags: !args.no_convention_tags,
         include_atlases: !args.no_atlases,
+        item_templates: args.item_templates,
     };
     let exported = export_jar(&args.jar, &args.output, &options)?;
     if json {
@@ -1393,6 +1399,18 @@ fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {
                 "  left out namespaces: {}",
                 exported.outside_namespaces.join(", ")
             );
+        }
+        if !exported.items.is_empty() {
+            for item in &exported.items {
+                let model = match &item.model {
+                    Some(model) => format!(", model {model}"),
+                    None => ", no item model (template's model)".to_string(),
+                };
+                println!(
+                    "  item: {} = {} -> {}{}",
+                    item.name, item.template, item.path, model
+                );
+            }
         }
         let mut skipped_reasons: std::collections::BTreeMap<&str, usize> =
             std::collections::BTreeMap::new();

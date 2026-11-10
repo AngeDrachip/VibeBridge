@@ -24,8 +24,9 @@ is only "working" at the highest level where it has actually been exercised.
 | `vibe horizon export`, `validate`, `install` | Implemented, unit-tested |
 | `horizon-ctl` discovery in launcher installs, preferring prepared game files | Implemented, unit-tested |
 | Install writes `mod.<id>:true` and defaults to the game home | Implemented, unit-tested |
+| `--item-template NAME=TEMPLATE` item declarations | Implemented, unit-tested |
 | A Vibe-exported bundle loaded by Horizon | Confirmed inside Horizon: 1 block and 2 items registered in 0.2.97 |
-| `litematicatool-forge-2.0.0.jar` carried as content | Tested with a real Forge mod: Horizon loads its assets/data; its Java-only item is reported, not carried |
+| `litematicatool-forge-2.0.0.jar` carried as content | Tested with a real Forge mod: Horizon loads its assets/data; `the_stick` is declared with `--item-template` |
 | Windows-written bundles (backslash paths, UTF-8 BOM) | Implemented, unit-tested |
 
 ## Milestone: 0.4.0 development
@@ -82,7 +83,7 @@ Locally verified for this milestone:
   Minecraft 26.3, world `VibeTest`
 - Horizon loaded a Vibe-exported bundle and registered its declared content
   (1 block, 2 items; 35,723 to 35,724 block states, 1,658 to 1,660 items)
-- `cargo test --workspace`: 93 tests pass
+- `cargo test --workspace`: 96 tests pass
 
 ## Known limitations
 
