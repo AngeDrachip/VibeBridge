@@ -32,6 +32,12 @@ use vibe_core::metadata::ModSide;
 use vibe_core::ModId;
 use vibe_loader::{inspect_jar, JarInspection};
 
+mod convert;
+pub use convert::{
+    convert_sources, ConflictPolicy, ConversionReport, ConvertOptions, MergedBundle,
+    SourceConversion,
+};
+
 /// Horizon's content-mod API version implemented by this exporter.
 pub const CONTENT_API: &str = "0.2";
 const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;

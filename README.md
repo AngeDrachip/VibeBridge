@@ -36,7 +36,8 @@ The zip bundles `java/build/vibe-runtime.jar` **and an optimized JRE** at
 without any Java installed. `--java` wins, then `VIBE_JAVA`, then the bundled
 runtime, then `JAVA_HOME`, then `PATH`. Vibe reads each jar read-only and reports
 blocked mods with evidence. Horizon itself cannot execute Java; `vibe horizon
-export` turns a jar's assets and data into a `.hmod` Horizon can load.
+export` turns a jar's assets and data into a `.hmod` Horizon can load, and `vibe
+horizon convert` does the same for one or several mods, separately or merged.
 
 ### From inside Horizon: the `.hnmod` native mod
 
@@ -85,8 +86,9 @@ verified hooks and the limits.
 - **Loads nested JARs** from `META-INF/jarjar/` and `META-INF/jars/` by
   extracting them to a temporary directory and adding them to the owning mod's
   class loader.
-- **Exports content** from a jar to a Horizon `.hmod` bundle (manifest,
-  `assets/`, `data/`) following Horizon's documented content format. Java code,
+- **Exports content** from one or several jars/mod folders to Horizon `.hmod`
+  bundles (manifest, `assets/`, `data/`) following Horizon's documented content
+  format, one bundle per mod or merged with `--merge ID`. Java code,
   code-registered content, Mixins, and coremods are not carried.
 - **Never modifies the source jar.** Inspection and export open archives
   read-only. Export writes a new file and refuses to overwrite its source.
@@ -239,6 +241,7 @@ Every command accepts `--json` for machine-readable output.
 | `vibe horizon probe` | Locate `horizon-ctl` and ask for state. | `0` found, `1` not found |
 | `vibe horizon connect` | Connect to a running Horizon instance and verify it. | `0` ready, `1` not ready |
 | `vibe horizon export <jar>` | Write a `.hmod` content bundle from a jar; `--item-template NAME=TEMPLATE` declares an item the mod registered in Java. | `0` success, `1` error |
+| `vibe horizon convert <sources...>` | Convert one or several jars/mod folders to `.hmod` bundles, one per mod or merged with `--merge ID`; failures are reported per source. | `0` all converted, `1` a source or merge failed |
 | `vibe horizon validate <hmod>` | Check a bundle against the documented Horizon rules Vibe can verify. | `0` valid, `2` invalid, `1` unreadable |
 | `vibe horizon install <hmod>` | Copy a validated bundle into the game folder's `horizon-mods/` and turn it on in `horizon-mods.txt`. | `0` success, `1` error |
 
@@ -369,11 +372,21 @@ the bundle is invalid. This is not a replacement for Horizon's own
 `cargo horizon-mod check`; it covers what Vibe can verify from the documented
 format.
 
-`vibe horizon install` validates a bundle and copies it into
-`<game-dir>/horizon-mods/`, the folder Horizon reads content mods from. It does
-not enable the mod: Horizon keeps that switch in `horizon-mods.txt`, and Vibe
-never edits a game's settings. Use `--dry-run` to see the destination and hash
-without writing, and `--force` to replace a file with the same name.
+`vibe horizon convert` applies the same export to one or several jars or mod
+folders. By default it writes one `<id>.hmod` per mod; `--merge ID` collects
+them into one bundle, rewrites `data/<source-id>/horizon/...` declarations to
+the merged id, keeps each mod's asset/data namespaces, and validates the result
+before writing it. Identical files are kept once; files with the same path and
+different bytes stop the merge unless `--keep-first` is passed. A failed source
+is reported with its error while the other sources still convert, and it stops a
+merge instead of silently dropping that mod. See
+[CONVERT.md](docs/CONVERT.md) for the exact boundary and examples.
+
+`vibe horizon install` validates a bundle, copies it into
+`<game-dir>/horizon-mods/`, the folder Horizon reads content mods from, and adds
+`mod.<id>:true` to `horizon-mods.txt` so the mod is on. Use `--dry-run` to see
+the destination and hash without writing, and `--force` to replace a file with
+the same name.
 
 ## Repository layout
 

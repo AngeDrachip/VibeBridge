@@ -32,7 +32,13 @@ Vibe inspects them read-only and runs the Forge API subset it supports.
 Horizon content bundles (.hmod) do not go here: install them with
   vibe horizon install <file>.hmod
 """
-DOCS = ("README.md", "INSTALL.md", "CHANGELOG.md", "1.0.0-BETA1-RELEASE-NOTES.md")
+DOCS = (
+    "README.md",
+    "INSTALL.md",
+    "CHANGELOG.md",
+    "1.0.0-BETA1-RELEASE-NOTES.md",
+    "docs/CONVERT.md",
+)
 
 
 def version() -> str:

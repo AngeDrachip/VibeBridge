@@ -42,6 +42,21 @@ All notable changes to Vibe are documented here. The format follows
   docs, `mods/` placeholder) with fixed dates and sorted entries.
 - `VIBE_BUNDLED_JAVA` overrides the bundled-runtime location; `vibe doctor`
   marks the selected runtime `[bundled, optimized]`.
+- `vibe horizon convert <sources...>`: convert one or several Java mods (jars or
+  unpacked folders) into `.hmod` bundles. By default it writes one `<id>.hmod`
+  per mod; `--merge ID` merges them into one bundle, rewriting
+  `data/<source-id>/horizon/...` declarations to the merged id and keeping each
+  mod's asset/data namespaces. Identical files are deduplicated; same-path
+  different-bytes conflicts stop the merge unless `--keep-first` is passed. A
+  failed source is reported while the others convert, and aborts a merge rather
+  than dropping that mod. Every merged bundle is validated before it is written.
+- `docs/CONVERT.md`: what a conversion carries (`assets/`, `data/`, tags,
+  atlases, `--item-template` declarations) and what stays behind (Java code,
+  Mixins, coremods, access transformers, Java-registered content).
+- Verified on real mods: Custom Nether Portals 3.0.0 (NeoForge 1.21.1) and
+  WorldEdit 7.3.5 (Forge 1.20.1) convert separately and merge into one
+  `netherworld.hmod`; a real Horizon start loads it (`content from 3 mod(s)`,
+  namespaces `customnetherportals`, `netherworld`, `worldedit`, no warnings).
 
 ### Changed
 

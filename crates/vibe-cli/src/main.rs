@@ -22,8 +22,8 @@ use vibe_core::metadata::ModSide;
 use vibe_core::profile::{ModRequirements, ProfileMatrix, ProfileResolution, ResolutionStatus};
 use vibe_core::{CompatDatabase, CompatStatus, Verdict};
 use vibe_horizon::{
-    connect, export_jar, install_content_bundle, locate_game_dir, probe, validate_content_bundle,
-    ExportOptions,
+    connect, convert_sources, export_jar, install_content_bundle, locate_game_dir, probe,
+    validate_content_bundle, ConflictPolicy, ConvertOptions, ExportOptions,
 };
 use vibe_loader::{discover_jars, inspect_jar, JarInspection};
 use vibe_registry::plan_for_side_with_profile;
@@ -159,6 +159,8 @@ enum HorizonCommand {
     Connect(ConnectArgs),
     /// Export a jar's assets/data as a Horizon .hmod content bundle.
     Export(ExportArgs),
+    /// Convert one or several mods (jars or folders) into .hmod bundles.
+    Convert(ConvertArgs),
     /// Check a .hmod against the Horizon rules Vibe can verify.
     Validate(ValidateArgs),
     /// Copy a validated .hmod into <game-dir>/horizon-mods/.
@@ -215,6 +217,55 @@ struct ExportArgs {
     /// data/<id>/horizon/item/NAME.json copying the vanilla template.
     #[arg(long = "item-template", value_name = "NAME=TEMPLATE")]
     item_templates: Vec<String>,
+}
+
+#[derive(Args)]
+struct ConvertArgs {
+    /// Mod jars or unpacked mod folders to convert. Each source is opened
+    /// read-only and never modified.
+    #[arg(required = true)]
+    sources: Vec<PathBuf>,
+    /// Folder that receives the .hmod bundles. Defaults to the current folder.
+    #[arg(short, long, default_value = ".")]
+    output_dir: PathBuf,
+    /// Merge every source into one bundle with this id instead of writing one
+    /// bundle per mod. Declarations under data/<id>/horizon/ are rewritten to
+    /// the merged id; asset/data namespaces are kept.
+    #[arg(long, value_name = "ID")]
+    merge: Option<String>,
+    /// Bundle id for a single source. Required when that jar declares more than
+    /// one mod. Refused with several sources.
+    #[arg(long)]
+    id: Option<String>,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long)]
+    version: Option<String>,
+    /// client, server, or both. Defaults to each source's declared side.
+    #[arg(long, value_parser = ["client", "server", "both"])]
+    side: Option<String>,
+    /// Extra namespace to claim (repeatable).
+    #[arg(long = "namespace")]
+    namespaces: Vec<String>,
+    /// Replace an existing bundle with the same id.
+    #[arg(long)]
+    force: bool,
+    /// Leave out additions to vanilla tags.
+    #[arg(long)]
+    no_vanilla_tags: bool,
+    /// Leave out convention-tag additions.
+    #[arg(long)]
+    no_convention_tags: bool,
+    /// Leave out atlas sources.
+    #[arg(long)]
+    no_atlases: bool,
+    /// Declare an item the mod registered in Java: NAME=TEMPLATE (repeatable).
+    #[arg(long = "item-template", value_name = "NAME=TEMPLATE")]
+    item_templates: Vec<String>,
+    /// When merged sources ship the same path with different bytes, keep the
+    /// first source's copy instead of stopping.
+    #[arg(long)]
+    keep_first: bool,
 }
 
 #[derive(Args)]
@@ -354,6 +405,7 @@ fn execute(cli: Cli) -> Result<u8> {
             HorizonCommand::Probe(args) => horizon_probe(args, json),
             HorizonCommand::Connect(args) => horizon_connect(args, json),
             HorizonCommand::Export(args) => horizon_export(args, json),
+            HorizonCommand::Convert(args) => horizon_convert(args, json),
             HorizonCommand::Validate(args) => horizon_validate(args, json),
             HorizonCommand::Install(args) => horizon_install(args, json),
         },
@@ -1460,6 +1512,92 @@ fn horizon_export(args: ExportArgs, json: bool) -> Result<u8> {
         }
     }
     Ok(0)
+}
+
+fn horizon_convert(args: ConvertArgs, json: bool) -> Result<u8> {
+    let options = ConvertOptions {
+        merge: args.merge,
+        id: args.id,
+        name: args.name,
+        version: args.version,
+        side: args.side,
+        namespaces: args.namespaces,
+        force: args.force,
+        include_vanilla_tags: !args.no_vanilla_tags,
+        include_convention_tags: !args.no_convention_tags,
+        include_atlases: !args.no_atlases,
+        item_templates: args.item_templates,
+        conflict: if args.keep_first {
+            ConflictPolicy::KeepFirst
+        } else {
+            ConflictPolicy::Fail
+        },
+    };
+    let report = convert_sources(&args.sources, &args.output_dir, &options)?;
+    let failed = report.sources.iter().any(|source| source.error.is_some());
+    if json {
+        print_json(&report)?;
+    } else {
+        for source in &report.sources {
+            match (&source.output, &source.error) {
+                (_, Some(error)) => println!("FAILED {}: {error}", source.source.display()),
+                (Some(output), None) => {
+                    let summary = source
+                        .export
+                        .as_ref()
+                        .map(|export| {
+                            format!(
+                                "id {}  {} file(s), {} bytes",
+                                export.id, export.files, export.bytes
+                            )
+                        })
+                        .unwrap_or_default();
+                    println!("{} -> {}  ({summary})", source.source.display(), output.display());
+                }
+                (None, None) => println!("{}: no bundle written", source.source.display()),
+            }
+        }
+        if let Some(merged) = &report.merged {
+            println!();
+            println!("Merged {} mod(s) into {}", merged.sources.len(), merged.output.display());
+            println!(
+                "  id: {}  version: {}  side: {}",
+                merged.id, merged.version, merged.side
+            );
+            println!(
+                "  {} file(s), {} bytes; namespaces: {}",
+                merged.files,
+                merged.bytes,
+                merged.namespaces.join(", ")
+            );
+            println!("  sources: {}", merged.sources.join(", "));
+            if merged.deduplicated > 0 {
+                println!(
+                    "  {} identical file(s) shared by several mods, kept once",
+                    merged.deduplicated
+                );
+            }
+            if !merged.kept_first.is_empty() {
+                println!("  kept the first copy of:");
+                for kept in &merged.kept_first {
+                    println!("    - {kept}");
+                }
+            }
+        }
+        if !report.warnings.is_empty() {
+            println!("Warnings:");
+            for warning in &report.warnings {
+                println!("  - {warning}");
+            }
+        }
+        if !report.notes.is_empty() {
+            println!("Notes:");
+            for note in &report.notes {
+                println!("  - {note}");
+            }
+        }
+    }
+    Ok(if failed { 1 } else { 0 })
 }
 
 fn horizon_validate(args: ValidateArgs, json: bool) -> Result<u8> {

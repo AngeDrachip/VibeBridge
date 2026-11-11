@@ -117,7 +117,10 @@ cargo build --release
    runtime-capable profile (`forge-1.20.1-47` or `forge-1.21.1-52`).
 5. For content-only mods, export assets/data with
    `vibe horizon export <jar> --output <file>.hmod` and install the bundle with
-   `vibe horizon install`.
+   `vibe horizon install`. For several mods at once, or one merged pack, use
+   `vibe horizon convert <jars-or-folders> --output-dir converted` (add
+   `--merge ID` to merge). See [docs/CONVERT.md](docs/CONVERT.md): Java code is
+   never carried, only `assets/` and `data/`.
 
 ## Check a live Horizon instance
 
