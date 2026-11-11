@@ -20,7 +20,17 @@ All notable changes to Vibe are documented here. The format follows
 - `docs/NATIVE_MOD.md`: install steps, on-disk layout, verified hooks and the
   remaining limit (Java runs in the sidecar, not in Horizon's world).
 - `tools/package_hnmod.py`: deterministic `.hnmod` packager (fixed dates and
-  modes, so the same sources give the same SHA-256).
+  modes, so the same sources give the same SHA-256). It now builds the optimized
+  JRE into `mixins/vibe/data/jre.zip` (29 MB, 128 files) and fails without
+  `java/runtime`, so a released `.hnmod` always carries Java.
+- **The `.hnmod` carries the JRE.** Horizon's bundle format accepts binary files
+  under a mod's `data/` folder; the launcher stages `data/jre.zip` as
+  `native-data/vibe/jre.zip` and the game compiles it in with `native_data!`. On
+  first world start the mod extracts it to `<instance>/vibe/java/runtime/`
+  (stamped `.vibe-jre`, reused afterwards), so installing the `.hnmod` needs no
+  Java and no separate runtime folder. A fresh instance without
+  `vibe/java/runtime/` was proven end to end: extraction, `java.home` under
+  `vibe/java/runtime`, Java 27, `hello_forge` loaded, lifecycle complete.
 - **Bundled optimized JRE.** The release zip now ships a jlink image at
   `java/runtime/` (Java 27 base, ~50 MB, one CDS archive), so `vibe run` and the
   `.hnmod` sidecar need no Java installed. `java/build-runtime.ps1` and
@@ -39,8 +49,9 @@ All notable changes to Vibe are documented here. The format follows
   `JAVA_HOME` and `PATH`, so a release never depends on the machine's Java.
 - The sidecar JVM starts with `-XX:TieredStopAtLevel=1 -XX:+UseSerialGC
   -XX:-UsePerfData -Xshare:auto`; `VIBE_JAVA_ARGS` appends overrides.
-- The `.hnmod` sets `VIBE_JAVA` to `<instance>/vibe/java/runtime/` when it
-  exists, for both the sidecar and `/vibe export`.
+- The `.hnmod` extracts its embedded JRE to `<instance>/vibe/java/runtime/` on
+  first start and sets `VIBE_JAVA` to it, for both the sidecar and
+  `/vibe export`.
 - README and INSTALL document the native-mod path beside the standalone CLI.
 
 ## [1.0.0-beta.1] - 2026-11-10

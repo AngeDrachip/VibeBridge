@@ -47,7 +47,7 @@ and `horizon-mods/`, usually `%APPDATA%\horizon`), so that:
   vibe/
     vibe.exe                      from vibe-1.0.0-beta.1-windows-x86_64.zip
     java/build/vibe-runtime.jar   from the same zip
-    java/runtime/                 the optimized JRE from the same zip
+    java/runtime/                 extracted from the JRE the .hnmod carries (first start)
     mods/                         put your Forge jars here
     logs/                         created on first start
   horizon-mods/                   .hmod content exported by /vibe export
@@ -56,13 +56,18 @@ and `horizon-mods/`, usually `%APPDATA%\horizon`), so that:
 `VIBE_EXE` overrides the executable path if you keep Vibe elsewhere. The mod
 also looks beside `horizon-client.exe` and on `PATH`.
 
-When `<instance>/vibe/java/runtime/` exists, the mod sets `VIBE_JAVA` to it, so
-the sidecar uses the bundled JRE and no system Java is needed. Remove that folder
-and the sidecar falls back to `VIBE_JAVA`, then `JAVA_HOME`, then `PATH`.
+The `.hnmod` carries the optimized JRE itself, under `mixins/vibe/data/jre.zip`
+(29 MB, 128 files). Horizon's bundle format accepts binary files under a mod's
+`data/` folder: the launcher stages them as `native-data/vibe/jre.zip` and
+compiles the bytes into the game with `native_data!`. On the first world start
+the mod extracts that zip to `<instance>/vibe/java/runtime/` (stamped with
+`.vibe-jre`, so later starts reuse it) and sets `VIBE_JAVA` to it. No Java
+install and no separate `java/runtime/` folder are needed.
 
-A `.hnmod` is source-only by design (Horizon compiles it into the game), so it
-cannot embed a JRE. The release zip carries `java/runtime/` beside the mod's
-files; that is why the Vibe folder has to be unpacked in the instance.
+If a JRE is already unpacked at `<instance>/vibe/java/runtime/`, the mod uses it
+and skips extraction. Remove that folder to force the embedded copy to be
+unpacked again; without either, the sidecar falls back to `VIBE_JAVA`, then
+`JAVA_HOME`, then `PATH`.
 
 ## Install
 
@@ -87,19 +92,22 @@ builds reuse the cache.
 - `cargo build --locked -p horizon-client --bin horizon-client --profile fast`
   succeeds, and the built game was driven with `horizon-ctl` on prepared 26.3
   resources.
-- Opening `VibeProof` started the sidecar from the release layout **with no
-  system Java used**: the mod found `vibe/java/runtime/`, set `VIBE_JAVA`, and the
-  run log reports `java.home` = `<instance>/vibe/java/runtime`; the sidecar
+- Opening `VibeProof` in a fresh instance that had **no** `vibe/java/runtime/`
+  started the sidecar from the release layout **with no system Java used**: the
+  mod extracted the embedded JRE to `vibe/java/runtime/`, set `VIBE_JAVA`, and
+  the run log reports `java.home` = `<instance>/vibe/java/runtime`; the sidecar
   reports `Vibe runtime: vibe-runtime/1.0.0-beta.1 (Java 27)`, profile
   `forge-1.21.1-52`, one loaded entrypoint (`hello_forge`) and
-  `lifecycle: phase=complete, ok=true`, 4/4 event records.
+  `lifecycle: phase=complete, ok=true`, 4/4 event records. The extraction stamp
+  `vibe/java/.vibe-jre` reads `jre27-cds1:29092128`.
 - `/vibe status` reported the finished sidecar (exit 0), the jar count, the exe,
   `Java: <instance>\vibe\java\runtime (bundled, optimized)`, and the log lines.
 - `/vibe mods`, `/vibe help`, `/vibe reload` and `/vibe export` worked;
   `/vibe export` wrote `horizon-mods/hello-forge.hmod` (730 bytes).
 - The packaged `.hnmod` is accepted by Horizon's own reader,
   `horizon_mods::index::native::Bundle::read`: id `vibe`, version
-  `1.0.0-beta.1`, hooks 44, nine entries.
+  `1.0.0-beta.1`, hooks 44, ten entries including
+  `mixins/vibe/data/jre.zip` (29,092,128 bytes).
 
 The launcher-side install itself was not exercised on this machine (the
 launcher is not installed here), so the steps above mirror Horizon's documented

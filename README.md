@@ -49,9 +49,10 @@ itself and chat gains `/vibe status`, `/vibe mods`, `/vibe start`, `/vibe stop`,
    GitHub** → `https://github.com/AngeDrachip/VibeBridge`, or the
    `horizon-native-mods/` folder), then **Build**.
 2. Unpack the release zip inside the instance folder (the one holding
-   `options.txt`, usually `%APPDATA%\horizon`), so `vibe\vibe.exe`,
-   `vibe\java\build\vibe-runtime.jar` and `vibe\java\runtime\` exist. The native
-   mod points the sidecar at that bundled JRE, so no Java install is needed.
+   `options.txt`, usually `%APPDATA%\horizon`), so `vibe\vibe.exe` and
+   `vibe\java\build\vibe-runtime.jar` exist. The `.hnmod` carries the optimized
+   JRE itself and extracts it to `vibe\java\runtime\` on first start, so no Java
+   install and no `java\runtime\` folder are needed.
 3. Drop Forge jars in `<instance>\vibe\mods\` and open a world.
 
 This removes the manual `vibe run` step; it does not move Java into Horizon's

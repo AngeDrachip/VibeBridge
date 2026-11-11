@@ -40,9 +40,10 @@ automatically and `/vibe` commands answer in chat.
    instance's `horizon-native-mods/` folder), accept the native-code warning,
    then press **Build**.
 2. Unpack this release zip inside the instance folder (the one holding
-   `options.txt`, usually `%APPDATA%\horizon`). You need `vibe\vibe.exe`,
-   `vibe\java\build\vibe-runtime.jar` and `vibe\java\runtime\` there. The native
-   mod hands that bundled JRE to the sidecar, so no Java install is needed.
+   `options.txt`, usually `%APPDATA%\horizon`). You need `vibe\vibe.exe` and
+   `vibe\java\build\vibe-runtime.jar` there. The `.hnmod` carries the optimized
+   JRE and extracts it to `vibe\java\runtime\` on first start, so no Java install
+   is needed.
 3. Put Forge jars in `<instance>\vibe\mods\` and start a world.
 4. In chat: `/vibe status`, `/vibe mods`, `/vibe reload`, `/vibe help`.
 

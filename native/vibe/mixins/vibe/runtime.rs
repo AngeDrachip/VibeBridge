@@ -52,8 +52,121 @@ pub fn logs_dir(game_dir: &Path) -> PathBuf {
 /// has, so a run does not depend on the player's setup.
 pub fn bundled_java(game_dir: &Path) -> Option<PathBuf> {
     let runtime = home(game_dir).join("java").join("runtime");
-    let name = if cfg!(windows) { "java.exe" } else { "java" };
-    runtime.join("bin").join(name).is_file().then_some(runtime)
+    jre_exe(&runtime).is_file().then_some(runtime)
+}
+
+fn jre_exe(runtime: &Path) -> PathBuf {
+    runtime
+        .join("bin")
+        .join(if cfg!(windows) { "java.exe" } else { "java" })
+}
+
+/// The JRE this mod carries, compiled into the game by the launcher from the
+/// `.hnmod`'s `data/jre.zip` (`native_data!`). A `.hnmod` is source-only, but
+/// Horizon lets it carry binary files under `data/`, so the runtime travels
+/// inside the mod instead of beside it. Standalone tests don't carry it.
+#[cfg(not(test))]
+const JRE_ZIP: &[u8] = crate::native_data!("vibe", "jre.zip");
+
+/// Bumped when the embedded JRE changes; the extracted copy is reused while the
+/// stamp matches.
+#[allow(dead_code)]
+const JRE_TAG: &str = "jre27-cds1";
+
+fn jre_embedded() -> bool {
+    #[cfg(not(test))]
+    {
+        !JRE_ZIP.is_empty()
+    }
+    #[cfg(test)]
+    {
+        false
+    }
+}
+
+/// The JRE the sidecar will use: one already unpacked in `vibe/java/runtime`,
+/// or the copy carried in the mod, extracted on first use.
+fn ensure_java(game_dir: &Path) -> Option<PathBuf> {
+    if let Some(runtime) = bundled_java(game_dir) {
+        return Some(runtime);
+    }
+    if !jre_embedded() {
+        return None;
+    }
+    extract_jre(game_dir).ok()
+}
+
+#[cfg(not(test))]
+fn extract_jre(game_dir: &Path) -> Result<PathBuf, String> {
+    let java_root = home(game_dir).join("java");
+    let runtime = java_root.join("runtime");
+    let stamp = java_root.join(".vibe-jre");
+    let tag = format!("{JRE_TAG}:{}", JRE_ZIP.len());
+    if fs::read_to_string(&stamp).ok().as_deref() == Some(tag.as_str())
+        && jre_exe(&runtime).is_file()
+    {
+        return Ok(runtime);
+    }
+    fs::create_dir_all(&java_root)
+        .map_err(|error| format!("cannot create {} ({error})", java_root.display()))?;
+    let temp = java_root.join(format!(".runtime-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&temp);
+    fs::create_dir_all(&temp).map_err(|error| format!("cannot create {} ({error})", temp.display()))?;
+    if let Err(error) = extract_zip(JRE_ZIP, &temp) {
+        let _ = fs::remove_dir_all(&temp);
+        return Err(error);
+    }
+    if !jre_exe(&temp).is_file() {
+        let _ = fs::remove_dir_all(&temp);
+        return Err("the embedded JRE has no java executable".to_owned());
+    }
+    if runtime.exists() {
+        let _ = fs::remove_dir_all(&runtime);
+    }
+    fs::rename(&temp, &runtime).map_err(|error| {
+        let _ = fs::remove_dir_all(&temp);
+        format!("cannot move the JRE into {} ({error})", runtime.display())
+    })?;
+    let _ = fs::write(&stamp, tag);
+    Ok(runtime)
+}
+
+#[cfg(not(test))]
+fn extract_zip(bytes: &[u8], to: &Path) -> Result<(), String> {
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|error| format!("cannot read the embedded JRE ({error})"))?;
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index).map_err(|error| error.to_string())?;
+        let Some(path) = entry.enclosed_name() else {
+            let name = entry.name().unwrap_or_default().to_owned();
+            return Err(format!("unsafe path in the embedded JRE: {name}"));
+        };
+        let out = to.join(&path);
+        if entry.is_dir() {
+            fs::create_dir_all(&out).map_err(|error| format!("{}: {error}", out.display()))?;
+            continue;
+        }
+        if let Some(parent) = out.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("{}: {error}", parent.display()))?;
+        }
+        let mut file = File::create(&out).map_err(|error| format!("{}: {error}", out.display()))?;
+        std::io::copy(&mut entry, &mut file)
+            .map_err(|error| format!("{}: {error}", out.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Some(mode) = entry.unix_mode() {
+                let _ = fs::set_permissions(&out, fs::Permissions::from_mode(mode));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn extract_jre(_game_dir: &Path) -> Result<PathBuf, String> {
+    Err("the standalone tests do not carry the embedded JRE".to_owned())
 }
 
 /// `vibe.exe` (or `vibe`) from `VIBE_EXE`, the release folder, the game's own
@@ -245,7 +358,7 @@ pub fn start(game_dir: &Path) -> String {
         );
     };
     let log = logs.join(format!("sidecar-{}.log", timestamp()));
-    let java = bundled_java(game_dir);
+    let java = ensure_java(game_dir);
     let args = [
         std::ffi::OsStr::new("run"),
         mods.as_os_str(),
@@ -361,12 +474,15 @@ pub fn status(game_dir: &Path) -> Vec<String> {
     lines
 }
 
-/// Which JVM the sidecar will use: the optimized JRE shipped with the release,
-/// or whatever Java the machine provides.
+/// Which JVM the sidecar will use: the optimized JRE shipped with the release
+/// or carried in the mod, or whatever Java the machine provides.
 fn java_line(game_dir: &Path) -> String {
-    match bundled_java(game_dir) {
-        Some(root) => format!("Java: {} (bundled, optimized)", root.display()),
-        None => "Java: system Java (no bundled runtime in vibe/java/runtime)".to_owned(),
+    if let Some(root) = bundled_java(game_dir) {
+        format!("Java: {} (bundled, optimized)", root.display())
+    } else if jre_embedded() {
+        "Java: embedded in the mod (extracts to vibe/java/runtime on start)".to_owned()
+    } else {
+        "Java: system Java (no bundled runtime in vibe/java/runtime)".to_owned()
     }
 }
 
@@ -430,7 +546,7 @@ pub fn export(game_dir: &Path) -> String {
         log.display()
     );
     let log_for_thread = log.clone();
-    let java = bundled_java(game_dir);
+    let java = ensure_java(game_dir);
     std::thread::spawn(move || {
         let mut text = String::new();
         for jar in found {
